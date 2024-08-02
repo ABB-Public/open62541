@@ -28,7 +28,7 @@
 #include "../deps/open62541_queue.h"
 
 /* epoll_pwait returns bogus data with the tc compiler */
-#if defined(__linux__) && !defined(__TINYC__)
+#if defined(__linux__) && !defined(__TINYC__) && defined(UA_ARCHITECTURE_POSIX)
 # define UA_HAVE_EPOLL
 # include <sys/epoll.h>
 #endif
