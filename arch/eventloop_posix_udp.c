@@ -51,7 +51,7 @@ typedef struct {
     void *context;
 
     UA_SOCKADDR_STORAGE sendAddr;
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
     size_t sendAddrLength;
 #else
     UA_SOCKLEN sendAddrLength;
@@ -92,6 +92,75 @@ multiCastType(UA_ADDRINFO *info) {
     }
     return MULTICASTTYPE_NONE;
 }
+
+#ifdef UA_ARCHITECTURE_WIN32
+
+#define ADDR_BUFFER_SIZE 15000 /* recommended size in the MSVC docs */
+
+static UA_StatusCode
+setMulticastInterface(const char *netif, UA_ADDRINFO *info,
+                      MulticastRequest *req, const UA_Logger *logger) {
+    UA_IFADDRS *ifaddr;
+    UA_STACKARRAY(char, addrBuf, ADDR_BUFFER_SIZE);
+
+    /* Get the network interface descriptions */
+    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+        GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    PIP_ADAPTER_ADDRESSES ifaddr = (IP_ADAPTER_ADDRESSES *)addrBuf;
+    DWORD ret = GetAdaptersAddresses(info->ai_family, flags, NULL, ifaddr, &outBufLen);
+    if(ret != NO_ERROR) {
+        UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
+                     "UDP\t| Interface configuration preparation failed");
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+
+    /* Iterate through linked list of network interfaces */
+    char sourceAddr[64];
+    unsigned int idx = 0;
+    for(PIP_ADAPTER_ADDRESSES ifa = ifaddr; ifa != NULL; ifa = ifa->Next) {
+        idx = (info->ai_family == AF_INET) ? ifa->IfIndex : ifa->Ipv6IfIndex;
+
+        /* Check if network interface name matches */
+        if(strcmp(ifa->AdapterName, netif) == 0)
+            goto done;
+
+        /* Check if ip address matches */
+        for(PIP_ADAPTER_UNICAST_ADDRESS u = ifa->FirstUnicastAddress; u; u = u->Next) {
+            LPSOCKADDR addr = u->Address.lpSockaddr;
+            if(addr->sa_family == AF_INET) {
+                inet_ntop(AF_INET, &((struct sockaddr_in*)addr)->sin_addr,
+                          sourceAddr, sizeof(sourceAddr));
+            } else if(addr->sa_family == AF_INET6) {
+                inet_ntop(AF_INET6, &((struct sockaddr_in6*)addr)->sin6_addr,
+                          sourceAddr, sizeof(sourceAddr));
+            } else {
+                continue;
+            }
+            if(strcmp(sourceAddr, netif) == 0)
+                goto done;
+        }
+    }
+
+    /* Not matching interface found */
+    UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
+                 "UDP\t| Interface configuration preparation failed "
+                 "(interface %s not found)", netif);
+    return UA_STATUSCODE_BADINTERNALERROR;
+
+ done:
+    /* Write the interface index */
+    if(info->ai_family == AF_INET)
+        /* MSVC documentation of struct ip_mreq: To use an interface index of 1
+         * would be the same as an IP address of 0.0.0.1. */
+        req->ipv4.imr_interface.s_addr = htonl(idx);
+#if UA_IPV6
+    else /* if(info->ai_family == AF_INET6) */
+        req->ipv6.ipv6mr_interface = idx;
+#endif
+    return UA_STATUSCODE_GOOD;
+}
+
+#else
 
 static UA_StatusCode
 setMulticastInterface(const char *netif, UA_ADDRINFO *info,
@@ -157,6 +226,8 @@ setMulticastInterface(const char *netif, UA_ADDRINFO *info,
     return UA_STATUSCODE_GOOD;
 }
 
+#endif /* _WIN32 */
+
 static UA_StatusCode
 setupMulticastRequest(UA_FD socket, MulticastRequest *req, const UA_KeyValueMap *params,
                       UA_ADDRINFO *info, const UA_Logger *logger) {
@@ -164,8 +235,12 @@ setupMulticastRequest(UA_FD socket, MulticastRequest *req, const UA_KeyValueMap 
     if(info->ai_family == AF_INET) {
         UA_SOCKADDR_IN *sin = (UA_SOCKADDR_IN*)info->ai_addr;
         req->ipv4.imr_multiaddr = sin->sin_addr;
+#ifdef UA_ARCHITECTURE_WIN32
+        req->ipv4.imr_interface.s_addr = htonl(INADDR_ANY); /* default ANY */
+#else
         req->ipv4.imr_address.s_addr = UA_htonl(INADDR_ANY); /* default ANY */
         req->ipv4.imr_ifindex = 0;
+#endif
 #if UA_IPV6
     } else if(info->ai_family == AF_INET6) {
         UA_SOCKADDR_IN6 *sin6 = (UA_SOCKADDR_IN6 *)info->ai_addr;
@@ -450,11 +525,16 @@ setupSendMultiCast(UA_FD fd, UA_ADDRINFO *info, const UA_KeyValueMap *params,
     int result = -1;
     if(info->ai_family == AF_INET && multiCastType == MULTICASTTYPE_IPV4) {
         result = UA_setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF,
+#ifdef UA_ARCHITECTURE_WIN32
+                            (const char *)&req.ipv4.imr_interface,
+                            sizeof(struct in_addr));
+#else
                             &req.ipv4, sizeof(req.ipv4));
+#endif
 #if UA_IPV6
     } else if(info->ai_family == AF_INET6 && multiCastType == MULTICASTTYPE_IPV6) {
         result = UA_setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
                             (const char *)&req.ipv6.ipv6mr_interface,
 #else
                             &req.ipv6.ipv6mr_interface,
@@ -573,7 +653,6 @@ UDP_connectionSocketCallback(UA_POSIXConnectionManager *pcm, UDP_FD *conn,
 
     /* Receive */
     UA_SOCKADDR_STORAGE source;
-
     UA_SOCKLEN sourceSize = (UA_SOCKLEN)sizeof(UA_SOCKADDR_STORAGE);
     UA_SSIZE ret = UA_recvfrom(conn->rfd.fd, (char*)response.data, response.length,
                               MSG_DONTWAIT, (UA_SOCKADDR*)&source, &sourceSize);
@@ -690,7 +769,7 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
     MultiCastType mc = multiCastType(info);
 
     /* Bind socket to the address */
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
     /* On windows we need to bind the socket to INADDR_ANY before registering
      * for the multicast group */
     int ret = -1;
@@ -718,6 +797,20 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
 #else
     int ret = UA_bind(listenSocket, info->ai_addr, (UA_SOCKLEN)info->ai_addrlen);
 #endif
+
+    /* Get the port being used if dynamic porting was used */
+    if(port == 0) {
+        UA_SOCKADDR_IN sin;
+        memset(&sin, 0, sizeof(sin));
+        UA_SOCKLEN len = sizeof(sin);
+        UA_getsockname(listenSocket, (UA_SOCKADDR *)&sin, &len);
+        port = UA_ntohs(sin.sin_port);
+    }
+
+    UA_LOG_INFO(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+            "UDP %u\t| New listen socket for \"%s\" on port %u",
+            (unsigned)listenSocket, hoststr, port);
+
     if(ret < 0) {
         UA_LOG_SOCKET_ERRNO_WRAP(
            UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,

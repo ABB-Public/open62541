@@ -562,6 +562,7 @@ UA_EventLoopPOSIX_setNonBlocking(UA_FD sockfd) {
 #else
 #error Not supported
 #endif
+    return UA_STATUSCODE_GOOD;
 }
 
 UA_StatusCode

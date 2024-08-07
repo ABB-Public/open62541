@@ -188,7 +188,11 @@ triggerPOSIXInterruptEvent(int sig) {
 #endif
 
     /* Trigger the FD in the EventLoop for the self-pipe trick */
-    int err = UA_send(singletonIM->writeFD, ".", 1, 0);
+#ifdef _WIN32
+    int err = send(singletonIM->writeFD, ".", 1, 0);
+#else
+    ssize_t err = write(singletonIM->writeFD, ".", 1);
+#endif
     if(err <= 0) {
         UA_LOG_SOCKET_ERRNO_WRAP(
             UA_LOG_WARNING(singletonIM->im.eventSource.eventLoop->logger,
@@ -251,7 +255,14 @@ executeTriggeredPOSIXInterrupts(UA_EventSource *es, UA_RegisteredFD *rfd, short 
 
     /* Re-arm the socket for the next signal by reading from it */
     char buf[128];
-    UA_recv(rfd->fd, buf, 128, 0); /* ignore the result */
+#ifdef _WIN32
+    recv(rfd->fd, buf, 128, 0); /* ignore the result */
+#else
+    ssize_t i;
+    do {
+        i = read(rfd->fd, buf, 128);
+    } while(i > 0);
+#endif
 
     UA_RegisteredSignal *rs, *rs_tmp;
     TAILQ_FOREACH_SAFE(rs, &singletonIM->triggered, triggeredEntry, rs_tmp) {
@@ -344,29 +355,29 @@ deregisterPOSIXInterrupt(UA_InterruptManager *im, uintptr_t interruptHandle) {
     UA_UNLOCK(&el->elMutex);
 }
 
-#ifndef __linux__
+#ifdef _WIN32
 /* Windows has no pipes. Use a local TCP connection for the self-pipe trick.
  * https://stackoverflow.com/a/3333565 */
 static int
-pair(UA_SOCKET fds[2]) {
-    UA_SOCKADDR_IN inaddr;
-    UA_SOCKADDR addr;
-    UA_SOCKET lst = UA_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+pair(SOCKET fds[2]) {
+    struct sockaddr_in inaddr;
+    struct sockaddr addr;
+    SOCKET lst = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     memset(&inaddr, 0, sizeof(inaddr));
     memset(&addr, 0, sizeof(addr));
     inaddr.sin_family = AF_INET;
-    inaddr.sin_addr.s_addr = UA_htonl(INADDR_LOOPBACK);
+    inaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     inaddr.sin_port = 0;
     int yes = 1;
-    UA_setsockopt(lst, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
-    UA_bind(lst, (UA_SOCKADDR*)&inaddr, sizeof(inaddr));
-    UA_listen(lst, 1);
+    setsockopt(lst, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
+    bind(lst, (struct sockaddr *)&inaddr, sizeof(inaddr));
+    listen(lst, 1);
     int len = sizeof(inaddr);
-    UA_getsockname(lst, &addr, &len);
-    fds[0] = UA_socket(AF_INET, SOCK_STREAM, 0);
-    int err = UA_connect(fds[0], &addr, len);
-    fds[1] = UA_accept(lst, 0, 0);
-    UA_close(lst);
+    getsockname(lst, &addr, &len);
+    fds[0] = socket(AF_INET, SOCK_STREAM, 0);
+    int err = connect(fds[0], &addr, len);
+    fds[1] = accept(lst, 0, 0);
+    closesocket(lst);
     return err;
 }
 #endif
@@ -393,7 +404,7 @@ startPOSIXInterruptManager(UA_EventSource *es) {
 #ifndef UA_HAVE_EPOLL
     /* Create pipe for self-signaling */
     UA_FD pipefd[2];
-#ifndef __linux__
+#ifdef _WIN32
     int err = pair(pipefd);
 #else
     int err = pipe(pipefd);

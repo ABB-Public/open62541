@@ -533,4 +533,5 @@ UA_NetworkMessage_decodeJson(UA_NetworkMessage *dst, const UA_ByteString *src) {
     return ret;
 }
 
-#endif /* UA_ENABLE_PUBSUB */
+#endif // UA_ENABLE_PUBSUB
+

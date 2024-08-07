@@ -612,6 +612,7 @@ ReadWithNode(const UA_Node *node, UA_Server *server, UA_Session *session,
         /* TODO: Add support for the attributes from the 1.04 spec */
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
         break;
+
     default:
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
     }
@@ -819,14 +820,6 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
 /*****************/
 /* Type Checking */
 /*****************/
-
-static UA_DataTypeKind
-typeEquivalence(const UA_DataType *t) {
-    UA_DataTypeKind k = (UA_DataTypeKind)t->typeKind;
-    if(k == UA_DATATYPEKIND_ENUM)
-        return UA_DATATYPEKIND_INT32;
-    return k;
-}
 
 UA_Boolean
 compatibleValueDataType(UA_Server *server, const UA_DataType *dataType,
@@ -1077,7 +1070,7 @@ compatibleValue(UA_Server *server, UA_Session *session, const UA_NodeId *targetD
        value->arrayLength == 0) {
         /* There is no way to check type compatibility here. Leave it for the upper layers to
          * decide, if empty array is okay. */
-        return true;
+        return true;        
     }
 
     /* Is the datatype compatible? */
@@ -1170,12 +1163,12 @@ adjustValueType(UA_Server *server, UA_Variant *value,
     if(!type)
         return;
 
-    /* Unwrap ExtensionObject arrays if they all contain the same DataType */
-    unwrapEOArray(server, value);
-
     /* The target type is already achieved. No adjustment needed. */
     if(UA_NodeId_equal(&type->typeId, targetDataTypeId))
         return;
+
+    /* Unwrap ExtensionObject arrays if they all contain the same DataType */
+    unwrapEOArray(server, value);
 
     /* Find the target type */
     const UA_DataType *targetType =
@@ -1183,28 +1176,8 @@ adjustValueType(UA_Server *server, UA_Variant *value,
     if(!targetType)
         return;
 
-    /* A string is written to a byte array. the valuerank and array dimensions
-     * are checked later */
-    if(targetType == &UA_TYPES[UA_TYPES_BYTE] &&
-       type == &UA_TYPES[UA_TYPES_BYTESTRING] &&
-       UA_Variant_isScalar(value)) {
-        UA_ByteString *str = (UA_ByteString*)value->data;
-        value->type = &UA_TYPES[UA_TYPES_BYTE];
-        value->arrayLength = str->length;
-        value->data = str->data;
-        return;
-    }
-
-    /* An enum was sent as an int32, or an opaque type as a bytestring. This
-     * is detected with the typeKind indicating the "true" datatype. */
-    UA_DataTypeKind te1 = typeEquivalence(targetType);
-    UA_DataTypeKind te2 = typeEquivalence(type);
-    if(te1 == te2 && te1 <= UA_DATATYPEKIND_ENUM) {
-        value->type = targetType;
-        return;
-    }
-
-    /* Add more possible type adjustments here. What are they? */
+    /* Use the generic functionality shared by client and server */
+    adjustType(value, targetType);
 }
 
 static UA_StatusCode
@@ -1370,12 +1343,46 @@ writeDataTypeAttribute(UA_Server *server, UA_Session *session,
 
 static UA_StatusCode
 writeValueAttributeWithoutRange(UA_VariableNode *node, const UA_DataValue *value) {
-    UA_DataValue new_value;
-    UA_StatusCode retval = UA_DataValue_copy(value, &new_value);
+    UA_DataValue *oldValue = &node->value.data.value;
+    UA_DataValue tmpValue = *value;
+
+    /* If possible memcpy the new value over the old value without
+     * a malloc. For this the value needs to be "pointerfree". */
+    if(oldValue->hasValue && oldValue->value.type && oldValue->value.type->pointerFree &&
+       value->hasValue && value->value.type && value->value.type->pointerFree &&
+       oldValue->value.type->memSize == value->value.type->memSize) {
+        size_t oSize = 1;
+        size_t vSize = 1;
+        if(!UA_Variant_isScalar(&oldValue->value))
+            oSize = oldValue->value.arrayLength;
+        if(!UA_Variant_isScalar(&value->value))
+            vSize = value->value.arrayLength;
+
+        if(oSize == vSize &&
+           oldValue->value.arrayDimensionsSize == value->value.arrayDimensionsSize) {
+            /* Keep the old pointers, but adjust type and array length */
+            tmpValue.value = oldValue->value;
+            tmpValue.value.type = value->value.type;
+            tmpValue.value.arrayLength = value->value.arrayLength;
+
+            /* Copy the data over the old memory */
+            memcpy(tmpValue.value.data, value->value.data,
+                   oSize * oldValue->value.type->memSize);
+            memcpy(tmpValue.value.arrayDimensions, value->value.arrayDimensions,
+                   sizeof(UA_UInt32) * oldValue->value.arrayDimensionsSize);
+
+            /* Set the value */
+            node->value.data.value = tmpValue;
+            return UA_STATUSCODE_GOOD;
+        }
+    }
+
+    /* Make a deep copy of the value and replace when this succeeds */
+    UA_StatusCode retval = UA_Variant_copy(&value->value, &tmpValue.value);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
     UA_DataValue_clear(&node->value.data.value);
-    node->value.data.value = new_value;
+    node->value.data.value = tmpValue;
     return UA_STATUSCODE_GOOD;
 }
 
@@ -1516,11 +1523,18 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
         break;
 
     case UA_VALUEBACKENDTYPE_EXTERNAL:
+        retval = UA_STATUSCODE_GOOD;
         if(node->valueBackend.backend.external.callback.userWrite) {
             retval = node->valueBackend.backend.external.callback.
                 userWrite(server, &session->sessionId, session->sessionHandle,
                           &node->head.nodeId, node->head.context,
                           rangeptr, &adjustedValue);
+        } else {
+            if(node->valueBackend.backend.external.value) {
+                UA_DataValue_clear(*node->valueBackend.backend.external.value);
+                retval = UA_DataValue_copy(&adjustedValue,
+                                           *node->valueBackend.backend.external.value);
+            }
         }
         break;
 
@@ -1966,6 +1980,14 @@ Service_HistoryRead(UA_Server *server, UA_Session *session,
         return;
     }
 
+    /* Check if the configured History-Backend supports the requested history type */
+    if(!readHistory){
+        UA_LOG_INFO_SESSION(server->config.logging, session,
+                            "The configured HistoryBackend does not support the selected history-type.");
+        response->responseHeader.serviceResult = UA_STATUSCODE_BADNOTSUPPORTED;
+        return;
+    }
+
     /* Something to do? */
     if(request->nodesToReadSize == 0) {
         response->responseHeader.serviceResult = UA_STATUSCODE_BADNOTHINGTODO;
@@ -2139,7 +2161,7 @@ UA_Server_writeObjectProperty_scalar(UA_Server *server, const UA_NodeId objectId
                                      const UA_QualifiedName propertyName,
                                      const void *value, const UA_DataType *type) {
     UA_LOCK(&server->serviceMutex);
-    UA_StatusCode retval =
+    UA_StatusCode retval = 
         writeObjectProperty_scalar(server, objectId, propertyName, value, type);
     UA_UNLOCK(&server->serviceMutex);
     return retval;

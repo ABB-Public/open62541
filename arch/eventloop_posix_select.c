@@ -114,13 +114,8 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
     }
 
     UA_TIMEVAL tmptv = {
-#ifdef __linux__
-        (time_t)(listenTimeout / UA_DATETIME_SEC),
-        (suseconds_t)((listenTimeout % UA_DATETIME_SEC) / UA_DATETIME_USEC)
-#else
-        (long)(listenTimeout / UA_DATETIME_SEC),
-        (long)((listenTimeout % UA_DATETIME_SEC) / UA_DATETIME_USEC)
-#endif
+        (uint64_t)(listenTimeout / UA_DATETIME_SEC),
+        (uint64_t)((listenTimeout % UA_DATETIME_SEC) / UA_DATETIME_USEC)
     };
 
     UA_UNLOCK(&el->elMutex);

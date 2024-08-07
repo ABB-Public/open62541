@@ -609,7 +609,7 @@ browseReferencTargetCallback(void *context, UA_ReferenceTarget *t) {
     /* Remote references are ignored */
     if(!UA_NodePointer_isLocal(t->targetId))
         return NULL;
-
+    
     /* Get the node. Include only the ReferenceTypes we are interested in,
      * including those for figuring out the TypeDefinition (if that was
      * requested). */
@@ -619,13 +619,13 @@ browseReferencTargetCallback(void *context, UA_ReferenceTarget *t) {
                                           bc->resultRefs, bd->browseDirection);
     if(!target)
         return NULL;
-
+    
     /* The node class has to match */
     if(!matchClassMask(target, bd->nodeClassMask)) {
         UA_NODESTORE_RELEASE(bc->server, target);
         return NULL;
     }
-
+    
     /* Reached maxrefs. Return the "abort" signal. */
     if(bc->rr.size >= cp->maxReferences) {
         UA_NODESTORE_RELEASE(bc->server, target);

@@ -191,12 +191,12 @@ UA_Server_runUntilInterrupt(UA_Server *server) {
 
 const UA_ConnectionConfig UA_ConnectionConfig_default = {
     0,       /* .protocolVersion */
-    2 << 16, /* .sendBufferSize, 64k per chunk */
-    2 << 16, /* .recvBufferSize, 64k per chunk */
-    2 << 29, /* .localMaxMessageSize, 512 MB */
-    2 << 29, /* .remoteMaxMessageSize, 512 MB */
-    2 << 14, /* .localMaxChunkCount, 16k */
-    2 << 14  /* .remoteMaxChunkCount, 16k */
+    1 << 16, /* .sendBufferSize, 64k per chunk */
+    1 << 16, /* .recvBufferSize, 64k per chunk */
+    1 << 29, /* .localMaxMessageSize, 512 MB */
+    1 << 29, /* .remoteMaxMessageSize, 512 MB */
+    1 << 14, /* .localMaxChunkCount, 16k */
+    1 << 14  /* .remoteMaxChunkCount, 16k */
 };
 
 /***************************/
@@ -347,7 +347,10 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
         }
     }
 
-    conf->tcpReuseAddr = false;
+    /* If a second server is started later it can "steal" the port.
+     * Having port reuse enabled is important for development.
+     * Otherwise a long TCP TIME_WAIT is required before the port can be used again. */
+    conf->tcpReuseAddr = true;
 
     /* --> Start setting the default static config <-- */
 
@@ -361,11 +364,7 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     conf->buildInfo.softwareVersion =
         UA_STRING_ALLOC(VERSION(UA_OPEN62541_VER_MAJOR, UA_OPEN62541_VER_MINOR,
                                 UA_OPEN62541_VER_PATCH, UA_OPEN62541_VER_LABEL));
-#ifdef UA_PACK_DEBIAN
-    conf->buildInfo.buildNumber = UA_STRING_ALLOC("deb");
-#else
     conf->buildInfo.buildNumber = UA_STRING_ALLOC(__DATE__ " " __TIME__);
-#endif
     conf->buildInfo.buildDate = UA_DateTime_now();
 
     UA_ApplicationDescription_clear(&conf->applicationDescription);
@@ -401,33 +400,33 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
 
     if(portNumber == 0) {
         UA_LOG_WARNING(conf->logging, UA_LOGCATEGORY_USERLAND,
-                       "Cannot set the ServerUrl with a zero port");
-    } else {
-        if(conf->serverUrlsSize > 0) {
-            UA_LOG_WARNING(conf->logging, UA_LOGCATEGORY_USERLAND,
-                           "ServerUrls already set. Overriding.");
-            UA_Array_delete(conf->serverUrls, conf->serverUrlsSize,
-                            &UA_TYPES[UA_TYPES_STRING]);
-            conf->serverUrls = NULL;
-            conf->serverUrlsSize = 0;
-        }
-
-        /* Listen on all interfaces (also external). This must be the first
-         * entry if this is desired. Otherwise some interfaces may be blocked
-         * (already in use) with a hostname that is only locally reachable.*/
-        mp_snprintf(serverUrlBuffer[0], sizeof(serverUrlBuffer[0]),
-                    "opc.tcp://:%u", portNumber);
-        serverUrls[serverUrlsSize] = UA_STRING(serverUrlBuffer[0]);
-        serverUrlsSize++;
-
-        /* Add to the config */
-        UA_StatusCode retval =
-            UA_Array_copy(serverUrls, serverUrlsSize,
-                          (void**)&conf->serverUrls, &UA_TYPES[UA_TYPES_STRING]);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
-        conf->serverUrlsSize = serverUrlsSize;
+                       "Dynamic port assignment will be used.");
     }
+
+    if(conf->serverUrlsSize > 0) {
+        UA_LOG_WARNING(conf->logging, UA_LOGCATEGORY_USERLAND,
+                       "ServerUrls already set. Overriding.");
+        UA_Array_delete(conf->serverUrls, conf->serverUrlsSize,
+                        &UA_TYPES[UA_TYPES_STRING]);
+        conf->serverUrls = NULL;
+        conf->serverUrlsSize = 0;
+    }
+
+    /* Listen on all interfaces (also external). This must be the first
+     * entry if this is desired. Otherwise some interfaces may be blocked
+     * (already in use) with a hostname that is only locally reachable.*/
+    mp_snprintf(serverUrlBuffer[0], sizeof(serverUrlBuffer[0]),
+                "opc.tcp://:%u", portNumber);
+    serverUrls[serverUrlsSize] = UA_STRING(serverUrlBuffer[0]);
+    serverUrlsSize++;
+
+    /* Add to the config */
+    UA_StatusCode retval =
+        UA_Array_copy(serverUrls, serverUrlsSize,
+                      (void**)&conf->serverUrls, &UA_TYPES[UA_TYPES_STRING]);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+    conf->serverUrlsSize = serverUrlsSize;
 
     /* Endpoints */
     /* conf->endpoints = {0, NULL}; */

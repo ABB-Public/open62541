@@ -50,7 +50,7 @@ struct UA_CertificateVerification {
                                         UA_Variant *variant);
 
     /* Get the expire date from certificate */
-    UA_StatusCode (*getExpirationDate)(UA_DateTime *expiryDateTime,
+    UA_StatusCode (*getExpirationDate)(UA_DateTime *expiryDateTime, 
                                        UA_ByteString *certificate);
 
     UA_StatusCode (*getSubjectName)(UA_String *subjectName,

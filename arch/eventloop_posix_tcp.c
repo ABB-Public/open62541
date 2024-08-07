@@ -430,6 +430,30 @@ TCP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_ADDRINFO *ai,
 
     /* Bind socket to address */
     int ret = OUL_NET_SocketBind(listenSocket, ai->ai_addr, (UA_SOCKLEN)ai->ai_addrlen);
+
+    /* Get the port being used if dynamic porting was used */
+    if(port == 0) {
+        UA_SOCKADDR_IN sin;
+        memset(&sin, 0, sizeof(sin));
+        UA_SOCKLEN len = sizeof(sin);
+        UA_getsockname(listenSocket, (UA_SOCKADDR*)&sin, &len);
+        port = UA_ntohs(sin.sin_port);
+    }
+
+    /* If the INADDR_ANY is used, use the local hostname */
+    if(hostname) {
+        UA_LOG_INFO(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                    "TCP %u\t| Creating listen socket for \"%s\" on port %u",
+                    (unsigned)listenSocket, hostname, port);
+    } else {
+        UA_gethostname(hoststr, UA_MAXHOSTNAME_LENGTH);
+        hostname = hoststr;
+        UA_LOG_INFO(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                    "TCP %u\t| Creating listen socket for \"%s\" "
+                    "(with local hostname \"%s\") on port %u",
+                    (unsigned)listenSocket, addrstr, hostname, port);
+    }
+
     if(ret < 0) {
         UA_LOG_SOCKET_ERRNO_WRAP(
            UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
