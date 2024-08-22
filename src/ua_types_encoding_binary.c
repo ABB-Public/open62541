@@ -91,7 +91,6 @@ static status exchangeBuffer(Ctx *ctx) {
 static status
 encodeWithExchangeBuffer(const void *ptr, const UA_DataType *type, Ctx *ctx) {
     u8 *oldpos = ctx->pos; /* Last known good position */
-#ifndef NDEBUG
     /* We have to ensure that the buffer was not exchanged AND
      * BADENCODINGLIMITSEXCEEDED was returned. If that were the case, oldpos
      * would be invalid. That means, a type encoding must never return
@@ -99,7 +98,6 @@ encodeWithExchangeBuffer(const void *ptr, const UA_DataType *type, Ctx *ctx) {
      * is achieved by the use of encodeWithExchangeBuffer. */
     const u8 *oldend = ctx->end;
     (void)oldend; /* For compilers who don't understand NDEBUG... */
-#endif
     status ret = encodeBinaryJumpTable[type->typeKind](ptr, type, ctx);
     if(ret == UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED) {
         UA_assert(ctx->end == oldend);
