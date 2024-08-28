@@ -12,16 +12,22 @@
 
 #include <string.h>
 
-typedef struct {
+typedef struct UA_NodeIdStoreContextItem_gathering_default {
+    struct UA_NodeIdStoreContextItem_gathering_default *next;
     UA_NodeId nodeId;
     UA_HistorizingNodeIdSettings setting;
     UA_MonitoredItemCreateResult monitoredResult;
 } UA_NodeIdStoreContextItem_gathering_default;
 
+typedef struct UA_NodeIdStoreContextChunk {
+    struct UA_NodeIdStoreContextChunk *next;
+} UA_NodeIdStoreContextChunk;
+
 typedef struct {
-    UA_NodeIdStoreContextItem_gathering_default *dataStore;
-    size_t storeEnd;
-    size_t storeSize;
+    UA_NodeIdStoreContextItem_gathering_default *used;
+    UA_NodeIdStoreContextItem_gathering_default *free;
+    UA_NodeIdStoreContextChunk *chunks;
+    size_t chunkSize;
 } UA_NodeIdStoreContext;
 
 static void
@@ -47,11 +53,12 @@ static UA_NodeIdStoreContextItem_gathering_default*
 getNodeIdStoreContextItem_gathering_default(UA_NodeIdStoreContext *context,
                                             const UA_NodeId *nodeId)
 {
-    for (size_t i = 0; i < context->storeEnd; ++i) {
-        if (UA_NodeId_equal(&context->dataStore[i].nodeId, nodeId)) {
-            return &context->dataStore[i];
+    for (UA_NodeIdStoreContextItem_gathering_default* item = context->used; item; item = item->next) {
+        if (UA_NodeId_equal(&item->nodeId, nodeId)) {
+            return item;
         }
     }
+
     return NULL;
 }
 
@@ -114,30 +121,66 @@ startPoll_gathering_default(UA_Server *server,
 }
 
 static UA_StatusCode
-registerNodeId_gathering_default(UA_Server *server,
-                                 void *context,
-                                 const UA_NodeId *nodeId,
-                                 const UA_HistorizingNodeIdSettings setting)
+allocateChunk(UA_NodeIdStoreContext *context)
+{
+    UA_NodeIdStoreContextChunk *chunk = UA_malloc(sizeof(UA_NodeIdStoreContextChunk) + (context->chunkSize * sizeof(UA_NodeIdStoreContextItem_gathering_default)));
+    if(NULL == chunk) {
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    } else {
+        UA_NodeIdStoreContextItem_gathering_default* item = (UA_NodeIdStoreContextItem_gathering_default*) ((intptr_t)chunk + sizeof(UA_NodeIdStoreContextChunk));
+        for(size_t i = 0; i < context->chunkSize; i++) {
+            item[i].next  = context->free;
+            context->free = &item[i];
+        }
+        chunk->next     = context->chunks;
+        context->chunks = chunk;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+registerNodeId_gathering_common(UA_Server *server,
+                                void *context,
+                                const UA_NodeId *nodeId,
+                                const UA_HistorizingNodeIdSettings setting,
+                                bool allocateOnMiss)
 {
     UA_NodeIdStoreContext *ctx = (UA_NodeIdStoreContext*)context;
     if (getNodeIdStoreContextItem_gathering_default(ctx, nodeId)) {
         return UA_STATUSCODE_BADNODEIDEXISTS;
     }
-    if (ctx->storeEnd >= ctx->storeSize) {
-        size_t newStoreSize = ctx->storeSize * 2;
-        ctx->dataStore = (UA_NodeIdStoreContextItem_gathering_default*)UA_realloc(ctx->dataStore,  (newStoreSize * sizeof(UA_NodeIdStoreContextItem_gathering_default)));
-        if (!ctx->dataStore) {
-            ctx->storeSize = 0;
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        }
-        memset(&ctx->dataStore[ctx->storeSize], 0, (newStoreSize - ctx->storeSize) * sizeof(UA_NodeIdStoreContextItem_gathering_default));
-        ctx->storeSize = newStoreSize;
+
+    if(NULL == ctx->free && allocateOnMiss) {
+        allocateChunk(ctx);
     }
-    UA_NodeId_copy(nodeId, &ctx->dataStore[ctx->storeEnd].nodeId);
-    size_t current = ctx->storeEnd;
-    ctx->dataStore[current].setting = setting;
-    ++ctx->storeEnd;
+
+    if(NULL == ctx->free) {
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+
+    UA_NodeId copyId;
+    if(UA_NodeId_copy(nodeId, &copyId)) {
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+
+    UA_NodeIdStoreContextItem_gathering_default* item = ctx->free;
+    ctx->free = item->next;
+    item->next = ctx->used;
+    item->nodeId = copyId;
+    item->setting = setting;
+    memset(&item->monitoredResult, 0, sizeof(item->monitoredResult));
+    ctx->used = item;
+
     return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+registerNodeId_gathering_default(UA_Server *server,
+                                 void *context,
+                                 const UA_NodeId *nodeId,
+                                 const UA_HistorizingNodeIdSettings setting)
+{
+    return registerNodeId_gathering_common(server, context, nodeId, setting, true);
 }
 
 static const UA_HistorizingNodeIdSettings*
@@ -159,13 +202,17 @@ deleteMembers_gathering_default(UA_HistoryDataGathering *gathering)
     if (gathering == NULL || gathering->context == NULL)
         return;
     UA_NodeIdStoreContext *ctx = (UA_NodeIdStoreContext*)gathering->context;
-    for (size_t i = 0; i < ctx->storeEnd; ++i) {
-        UA_NodeId_clear(&ctx->dataStore[i].nodeId);
+    for (UA_NodeIdStoreContextItem_gathering_default *item = ctx->used; item; item = item->next) {
+        UA_NodeId_clear(&item->nodeId);
         // There is still a monitored item present for this gathering
         // You need to remove it with UA_Server_deleteMonitoredItem
-        UA_assert(ctx->dataStore[i].monitoredResult.monitoredItemId == 0);
+        UA_assert(item->monitoredResult.monitoredItemId == 0);
     }
-    UA_free(ctx->dataStore);
+    while(ctx->chunks) {
+        UA_NodeIdStoreContextChunk *chunk = ctx->chunks;
+        ctx->chunks = chunk->next;
+        UA_free(chunk);
+    }
     UA_free(gathering->context);
 }
 
@@ -223,9 +270,13 @@ UA_HistoryDataGathering_Default(size_t initialNodeIdStoreSize)
     gathering.deleteMembers = &deleteMembers_gathering_default;
     gathering.updateNodeIdSetting = &updateNodeIdSetting_gathering_default;
     UA_NodeIdStoreContext *context = (UA_NodeIdStoreContext*)UA_calloc(1, sizeof(UA_NodeIdStoreContext));
-    context->storeEnd = 0;
-    context->storeSize = initialNodeIdStoreSize;
-    context->dataStore = (UA_NodeIdStoreContextItem_gathering_default*)UA_calloc(initialNodeIdStoreSize, sizeof(UA_NodeIdStoreContextItem_gathering_default));
+    if(context) {
+        context->used = NULL;
+        context->free = NULL;
+        context->chunks = NULL;
+        context->chunkSize = initialNodeIdStoreSize;
+        allocateChunk(context);
+    }
     gathering.context = context;
     return gathering;
 }
@@ -236,18 +287,7 @@ static UA_StatusCode
 registerNodeId_gathering_circular(UA_Server *server, void *context,
                                   const UA_NodeId *nodeId,
                                   const UA_HistorizingNodeIdSettings setting) {
-    UA_NodeIdStoreContext *ctx = (UA_NodeIdStoreContext *)context;
-    if(getNodeIdStoreContextItem_gathering_default(ctx, nodeId)) {
-        return UA_STATUSCODE_BADNODEIDEXISTS;
-    }
-    if(ctx->storeEnd >= ctx->storeSize || !ctx->dataStore) {
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-    UA_NodeId_copy(nodeId, &ctx->dataStore[ctx->storeEnd].nodeId);
-    size_t current = ctx->storeEnd;
-    ctx->dataStore[current].setting = setting;
-    ++ctx->storeEnd;
-    return UA_STATUSCODE_GOOD;
+    return registerNodeId_gathering_common(server, context, nodeId, setting, false);
 }
 
 UA_HistoryDataGathering
