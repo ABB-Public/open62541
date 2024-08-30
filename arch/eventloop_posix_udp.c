@@ -56,6 +56,8 @@ typedef struct {
 #else
     UA_SOCKLEN sendAddrLength;
 #endif
+    uint32_t* pu32MulticastTxAddrList;
+    uint32_t  u32MulticastTxAddrListSize;
 } UDP_FD;
 
 typedef enum {
@@ -91,185 +93,6 @@ multiCastType(UA_ADDRINFO *info) {
 #endif
     }
     return MULTICASTTYPE_NONE;
-}
-
-#ifdef UA_ARCHITECTURE_WIN32
-
-#define ADDR_BUFFER_SIZE 15000 /* recommended size in the MSVC docs */
-
-static UA_StatusCode
-setMulticastInterface(const char *netif, UA_ADDRINFO *info,
-                      MulticastRequest *req, const UA_Logger *logger) {
-    UA_IFADDRS *ifaddr;
-    UA_STACKARRAY(char, addrBuf, ADDR_BUFFER_SIZE);
-
-    /* Get the network interface descriptions */
-    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
-        GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_FRIENDLY_NAME;
-    PIP_ADAPTER_ADDRESSES ifaddr = (IP_ADAPTER_ADDRESSES *)addrBuf;
-    DWORD ret = GetAdaptersAddresses(info->ai_family, flags, NULL, ifaddr, &outBufLen);
-    if(ret != NO_ERROR) {
-        UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
-                     "UDP\t| Interface configuration preparation failed");
-        return UA_STATUSCODE_BADINTERNALERROR;
-    }
-
-    /* Iterate through linked list of network interfaces */
-    char sourceAddr[64];
-    unsigned int idx = 0;
-    for(PIP_ADAPTER_ADDRESSES ifa = ifaddr; ifa != NULL; ifa = ifa->Next) {
-        idx = (info->ai_family == AF_INET) ? ifa->IfIndex : ifa->Ipv6IfIndex;
-
-        /* Check if network interface name matches */
-        if(strcmp(ifa->AdapterName, netif) == 0)
-            goto done;
-
-        /* Check if ip address matches */
-        for(PIP_ADAPTER_UNICAST_ADDRESS u = ifa->FirstUnicastAddress; u; u = u->Next) {
-            LPSOCKADDR addr = u->Address.lpSockaddr;
-            if(addr->sa_family == AF_INET) {
-                inet_ntop(AF_INET, &((struct sockaddr_in*)addr)->sin_addr,
-                          sourceAddr, sizeof(sourceAddr));
-            } else if(addr->sa_family == AF_INET6) {
-                inet_ntop(AF_INET6, &((struct sockaddr_in6*)addr)->sin6_addr,
-                          sourceAddr, sizeof(sourceAddr));
-            } else {
-                continue;
-            }
-            if(strcmp(sourceAddr, netif) == 0)
-                goto done;
-        }
-    }
-
-    /* Not matching interface found */
-    UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
-                 "UDP\t| Interface configuration preparation failed "
-                 "(interface %s not found)", netif);
-    return UA_STATUSCODE_BADINTERNALERROR;
-
- done:
-    /* Write the interface index */
-    if(info->ai_family == AF_INET)
-        /* MSVC documentation of struct ip_mreq: To use an interface index of 1
-         * would be the same as an IP address of 0.0.0.1. */
-        req->ipv4.imr_interface.s_addr = htonl(idx);
-#if UA_IPV6
-    else /* if(info->ai_family == AF_INET6) */
-        req->ipv6.ipv6mr_interface = idx;
-#endif
-    return UA_STATUSCODE_GOOD;
-}
-
-#else
-
-static UA_StatusCode
-setMulticastInterface(const char *netif, UA_ADDRINFO *info,
-                      MulticastRequest *req, const UA_Logger *logger) {
-    UA_IFADDRS *ifaddr;
-    int ret = UA_getifaddrs(&ifaddr);
-    if(ret == -1) {
-        UA_LOG_SOCKET_ERRNO_WRAP(
-           UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
-                        "UDP\t| Interface configuration preparation failed "
-                        "(getifaddrs error: %s)", errno_str));
-        return UA_STATUSCODE_BADINTERNALERROR;
-    }
-
-    /* Iterate over the interfaces */
-    unsigned int idx = 0;
-    UA_IFADDRS *ifa = NULL;
-    for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if(!ifa->ifa_addr)
-            continue;
-
-        /* Does the protocol family match? */
-        if(ifa->ifa_addr->sa_family != info->ai_family)
-            continue;
-
-        idx = UA_if_nametoindex(ifa->ifa_name);
-        if(idx == 0)
-            continue;
-
-        /* Found network interface by name */
-        if(strcmp(ifa->ifa_name, netif) == 0)
-            break;
-
-        /* Check if the interface name is an IP address that matches */
-        char host[UA_NI_MAXHOST];
-        ret = UA_getnameinfo(ifa->ifa_addr,
-                          (info->ai_family == AF_INET) ?
-                          sizeof(UA_SOCKADDR_IN) : sizeof(UA_SOCKADDR_IN6),
-                          host, UA_NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-        if(ret != 0) {
-            UA_LOG_SOCKET_ERRNO_WRAP(
-               UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
-                            "UDP\t| Interface configuration preparation "
-                            "ifailed (getnameinfo error: %s).", errno_str));
-            UA_freeifaddrs(ifaddr);
-            return UA_STATUSCODE_BADINTERNALERROR;
-        }
-        if(strcmp(host, netif) == 0)
-            break;
-    }
-
-    UA_freeifaddrs(ifaddr);
-    if(!ifa)
-        return UA_STATUSCODE_BADINTERNALERROR;
-
-    /* Write the interface index */
-    if(info->ai_family == AF_INET)
-        req->ipv4.imr_ifindex = idx;
-#if UA_IPV6
-    else /* if(info->ai_family == AF_INET6) */
-        req->ipv6.ipv6mr_interface = idx;
-#endif
-    return UA_STATUSCODE_GOOD;
-}
-
-#endif /* _WIN32 */
-
-static UA_StatusCode
-setupMulticastRequest(UA_FD socket, MulticastRequest *req, const UA_KeyValueMap *params,
-                      UA_ADDRINFO *info, const UA_Logger *logger) {
-    /* Initialize the address information */
-    if(info->ai_family == AF_INET) {
-        UA_SOCKADDR_IN *sin = (UA_SOCKADDR_IN*)info->ai_addr;
-        req->ipv4.imr_multiaddr = sin->sin_addr;
-#ifdef UA_ARCHITECTURE_WIN32
-        req->ipv4.imr_interface.s_addr = htonl(INADDR_ANY); /* default ANY */
-#else
-        req->ipv4.imr_address.s_addr = UA_htonl(INADDR_ANY); /* default ANY */
-        req->ipv4.imr_ifindex = 0;
-#endif
-#if UA_IPV6
-    } else if(info->ai_family == AF_INET6) {
-        UA_SOCKADDR_IN6 *sin6 = (UA_SOCKADDR_IN6 *)info->ai_addr;
-        req->ipv6.ipv6mr_multiaddr = sin6->sin6_addr;
-        req->ipv6.ipv6mr_interface = 0; /* default ANY interface */
-#endif
-    } else {
-        UA_LOG_ERROR(logger, UA_LOGCATEGORY_SERVER,
-                     "UDP\t| Multicast configuration failed: Unknown protocol family");
-        return UA_STATUSCODE_BADINTERNALERROR;
-    }
-
-    /* Was an interface (or local IP address) defined? */
-    const UA_String *netif = (const UA_String*)
-        UA_KeyValueMap_getScalar(params, UDPConfigParameters[UDP_PARAMINDEX_INTERFACE].name,
-                                 &UA_TYPES[UA_TYPES_STRING]);
-    if(!netif) {
-        UA_LOG_WARNING(logger, UA_LOGCATEGORY_NETWORK,
-                       "UDP %u\t| No network interface defined for multicast. "
-                       "The first suitable network interface is used.",
-                       (unsigned)socket);
-        return UA_STATUSCODE_GOOD;
-    }
-
-    /* Set the interface index */
-    UA_STACKARRAY(char, interfaceAsChar, sizeof(char) * netif->length + 1);
-    memcpy(interfaceAsChar, netif->data, netif->length);
-    interfaceAsChar[netif->length] = 0;
-    return setMulticastInterface(interfaceAsChar, info, req, logger);
 }
 
 /* Retrieves hostname and port from given key value parameters.
@@ -486,68 +309,48 @@ setConnectionConfig(UA_FD socket, const UA_KeyValueMap *params,
 }
 
 static UA_StatusCode
-setupListenMultiCast(UA_FD fd, UA_ADDRINFO *info, const UA_KeyValueMap *params,
-                     MultiCastType multiCastType, const UA_Logger *logger) {
+setupListenMultiCast(UA_POSIXConnectionManager *pcm, UA_FD fd, UA_ADDRINFO *info, const UA_KeyValueMap *params,
+                    MultiCastType multiCastType, const UA_Logger *logger, const char* multicastAddr) {
     MulticastRequest req;
-    UA_StatusCode res = setupMulticastRequest(fd, &req, params, info, logger);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
+    UDP_FD *conn = (UDP_FD*)ZIP_FIND(UA_FDTree, &pcm->fds, &fd);
 
     int result = -1;
-    if(info->ai_family == AF_INET && multiCastType == MULTICASTTYPE_IPV4) {
-        result = UA_setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-                               &req.ipv4, sizeof(req.ipv4));
-#if UA_IPV6
-    } else if(info->ai_family == AF_INET6 && multiCastType == MULTICASTTYPE_IPV6) {
-        result = UA_setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP,
-                               &req.ipv6, sizeof(req.ipv6));
-#endif
-    }
 
-    if(result < 0) {
-        UA_LOG_SOCKET_ERRNO_WRAP(
-            UA_LOG_ERROR(logger, UA_LOGCATEGORY_NETWORK,
-                         "UDP %u\t| Cannot set socket for multicast receiving. Error: %s",
-                         (unsigned)fd, errno_str));
+    if(NULL == conn) {
+        UA_LOG_ERROR(logger, UA_LOGCATEGORY_NETWORK,
+                     "UDP %u\t| Cannot find connection for multicast setup",
+                     (unsigned)fd);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
-    return UA_STATUSCODE_GOOD;
-}
+    else if(0 != conn->u32MulticastTxAddrListSize && NULL != conn->pu32MulticastTxAddrList) {
+        for(uint32_t u32AddrIndex = 0; u32AddrIndex < conn->u32MulticastTxAddrListSize; u32AddrIndex++) {
 
-static UA_StatusCode
-setupSendMultiCast(UA_FD fd, UA_ADDRINFO *info, const UA_KeyValueMap *params,
-                   MultiCastType multiCastType, const UA_Logger *logger) {
-    MulticastRequest req;
-    UA_StatusCode res = setupMulticastRequest(fd, &req, params, info, logger);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
+            req.ipv4.imr_multiaddr = UA_inet_addr(multicastAddr);
+            req.ipv4.imr_address.s_addr = UA_ntohl(conn->pu32MulticastTxAddrList[u32AddrIndex]);
+            req.ipv4.imr_ifindex = -1;
 
-    int result = -1;
-    if(info->ai_family == AF_INET && multiCastType == MULTICASTTYPE_IPV4) {
-        result = UA_setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF,
-#ifdef UA_ARCHITECTURE_WIN32
-                            (const char *)&req.ipv4.imr_interface,
-                            sizeof(struct in_addr));
-#else
-                            &req.ipv4, sizeof(req.ipv4));
-#endif
-#if UA_IPV6
-    } else if(info->ai_family == AF_INET6 && multiCastType == MULTICASTTYPE_IPV6) {
-        result = UA_setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
-#ifdef UA_ARCHITECTURE_WIN32
-                            (const char *)&req.ipv6.ipv6mr_interface,
-#else
-                            &req.ipv6.ipv6mr_interface,
-#endif
-                            sizeof(req.ipv6.ipv6mr_interface));
-#endif
+            if(info->ai_family == AF_INET && multiCastType == MULTICASTTYPE_IPV4) {
+                result = UA_setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                                    &req.ipv4, sizeof(req.ipv4));
+                if(result != 0) {
+                    UA_LOG_WARNING(logger, UA_LOGCATEGORY_NETWORK,
+                                "UA_setsockopt failed, %d", OUL_NET_ErrorLast());
+                    break;
+                }
+        #if UA_IPV6
+            } else if(info->ai_family == AF_INET6 && multiCastType == MULTICASTTYPE_IPV6) {
+                result = UA_setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP,
+                                    &req.ipv6, sizeof(req.ipv6));
+        #endif
+            }
+        }
     }
 
     if(result < 0) {
         UA_LOG_SOCKET_ERRNO_WRAP(
             UA_LOG_ERROR(logger, UA_LOGCATEGORY_NETWORK,
-                         "UDP %u\t| Cannot set socket for multicast sending. Error: %s",
-                         (unsigned)fd, errno_str));
+                        "UDP %u\t| Cannot set socket for multicast receiving. Error: %s",
+                        (unsigned)fd, errno_str));
         return UA_STATUSCODE_BADINTERNALERROR;
     }
     return UA_STATUSCODE_GOOD;
@@ -604,6 +407,11 @@ UDP_close(UA_POSIXConnectionManager *pcm, UDP_FD *conn) {
            UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
                           "UDP %u\t| Could not close the socket (%s)",
                           (unsigned)conn->rfd.fd, errno_str));
+    }
+
+
+    if(NULL != conn->pu32MulticastTxAddrList) {
+        UA_free(conn->pu32MulticastTxAddrList);
     }
 
     UA_free(conn);
@@ -717,11 +525,49 @@ UDP_connectionSocketCallback(UA_POSIXConnectionManager *pcm, UDP_FD *conn,
 }
 
 static UA_StatusCode
+setMulticastAddresses(UA_EventLoopPOSIX *el, const UA_KeyValueMap *params, UDP_FD *conn) {
+    UA_StatusCode ret = UA_STATUSCODE_BAD;
+    const UA_Variant* ptVar = UA_KeyValueMap_get(params, UA_QUALIFIEDNAME(0, "multicastAddrList"));
+
+    if (conn->u32MulticastTxAddrListSize > 0 || NULL != conn->pu32MulticastTxAddrList) {
+        UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                     "UDP\t| Multicast address list already set");
+        ret = UA_STATUSCODE_GOOD;
+    }
+    else if (NULL == ptVar) {
+        UA_LOG_ERROR(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                     "UDP\t| Multicast address list is not found");
+    }
+    else if(ptVar->type != &UA_TYPES[UA_TYPES_UINT32] || ptVar->arrayLength == 0) {
+        UA_LOG_ERROR(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                     "UDP\t| Multicast address list is not of type UA_UInt32 or is empty");
+    }
+    else {
+        conn->u32MulticastTxAddrListSize = ptVar->arrayLength;
+        conn->pu32MulticastTxAddrList = (UA_UInt32*)UA_calloc(conn->u32MulticastTxAddrListSize, sizeof(UA_UInt32));
+        if(NULL != conn->pu32MulticastTxAddrList) {
+            for(uint32_t u32AddrIndex = 0; u32AddrIndex < conn->u32MulticastTxAddrListSize; u32AddrIndex++) {
+                conn->pu32MulticastTxAddrList[u32AddrIndex] = ((UA_UInt32*)ptVar->data)[u32AddrIndex];
+            }
+            ret = UA_STATUSCODE_GOOD;
+        }
+    }
+
+    if(ret != UA_STATUSCODE_GOOD && NULL != conn->pu32MulticastTxAddrList) {
+        UA_free(conn->pu32MulticastTxAddrList);
+        conn->pu32MulticastTxAddrList = NULL;
+        conn->u32MulticastTxAddrListSize = 0;
+    }
+
+    return ret;
+}
+
+static UA_StatusCode
 UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
                          UA_ADDRINFO *info, const UA_KeyValueMap *params,
                          void *application, void *context,
                          UA_ConnectionManager_connectionCallback connectionCallback,
-                         UA_Boolean validate) {
+                         UA_Boolean validate, const char *hostname) {
     UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)pcm->cm.eventSource.eventLoop;
     UA_LOCK_ASSERT(&el->elMutex, 1);
 
@@ -769,7 +615,7 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
     MultiCastType mc = multiCastType(info);
 
     /* Bind socket to the address */
-#ifdef UA_ARCHITECTURE_WIN32
+#ifdef _WIN32
     /* On windows we need to bind the socket to INADDR_ANY before registering
      * for the multicast group */
     int ret = -1;
@@ -820,16 +666,6 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
         return UA_STATUSCODE_BADCONNECTIONREJECTED;
     }
 
-    /* Enable multicast if this is a multicast address */
-    if(mc != MULTICASTTYPE_NONE) {
-        res = setupListenMultiCast(listenSocket, info, params,
-                                   mc, el->eventLoop.logger);
-        if(res != UA_STATUSCODE_GOOD) {
-            UA_close(listenSocket);
-            return res;
-        }
-    }
-
     /* Validation is complete - close and return */
     if(validate) {
         UA_close(listenSocket);
@@ -854,12 +690,23 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
     newudpfd->application = application;
     newudpfd->context = context;
 
+    if(UA_STATUSCODE_GOOD != (res = setMulticastAddresses(el, params, newudpfd))) {
+        UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                       "UDP %u\t| Error setting multicast addresses, closing",
+                       (unsigned)listenSocket);
+        UA_close(listenSocket);
+        return res;
+    }
+
     /* Register in the EventLoop */
     res = UA_EventLoopPOSIX_registerFD(el, &newudpfd->rfd);
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
                        "UDP %u\t| Error registering the socket, closing",
                        (unsigned)listenSocket);
+        if(NULL != newudpfd->pu32MulticastTxAddrList) {
+            UA_free(newudpfd->pu32MulticastTxAddrList);
+        }
         UA_free(newudpfd);
         UA_close(listenSocket);
         return res;
@@ -868,6 +715,16 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
     /* Register internally in the EventSource */
     ZIP_INSERT(UA_FDTree, &pcm->fds, &newudpfd->rfd);
     pcm->fdsSize++;
+
+    /* Enable multicast if this is a multicast address */
+    if(mc != MULTICASTTYPE_NONE) {
+        res = setupListenMultiCast(pcm, listenSocket, info, params,
+                                   mc, el->eventLoop.logger, hostname);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_close(listenSocket);
+            return res;
+        }
+    }
 
     /* Register the listen socket in the application */
     UA_UNLOCK(&el->elMutex);
@@ -918,7 +775,7 @@ UDP_registerListenSockets(UA_POSIXConnectionManager *pcm, const char *hostname,
     UA_StatusCode rv = UA_STATUSCODE_GOOD;
     while(ai) {
         rv = UDP_registerListenSocket(pcm, port, ai, params, application,
-                                      context, connectionCallback, validate);
+                                      context, connectionCallback, validate, hostname);
         if(rv != UA_STATUSCODE_GOOD)
             break;
         ai = ai->ai_next;
@@ -982,6 +839,7 @@ UDP_sendWithConnection(UA_ConnectionManager *cm, uintptr_t connectionId,
                        UA_ByteString *buf) {
     UA_POSIXConnectionManager *pcm = (UA_POSIXConnectionManager*)cm;
     UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)cm->eventSource.eventLoop;
+    UA_StatusCode ret = UA_STATUSCODE_GOOD;
 
     UA_LOCK(&el->elMutex);
 
@@ -989,69 +847,96 @@ UDP_sendWithConnection(UA_ConnectionManager *cm, uintptr_t connectionId,
     UA_FD fd = (UA_FD)connectionId;
     UDP_FD *conn = (UDP_FD*)ZIP_FIND(UA_FDTree, &pcm->fds, &fd);
     if(!conn) {
-        UA_UNLOCK(&el->elMutex);
-        UA_ByteString_clear(buf);
-        return UA_STATUSCODE_BADINTERNALERROR;
+        ret = UA_STATUSCODE_BADINTERNALERROR;
     }
+    else if(conn->application == NULL) {
+        ret = UA_STATUSCODE_BADINTERNALERROR;
+    }
+    else {
 
-    /* Send the full buffer. This may require several calls to send */
-    size_t nWritten = 0;
-    do {
-        UA_SSIZE n = 0;
-        do {
-            UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
-                         "UDP %u\t| Attempting to send", (unsigned)connectionId);
+        if(0 != conn->u32MulticastTxAddrListSize && NULL != conn->pu32MulticastTxAddrList) {
 
-            /* Prevent OS signals when sending to a closed socket */
-            int flags = MSG_NOSIGNAL;
-            size_t bytes_to_send = buf->length - nWritten;
-            n = UA_sendto((UA_FD)connectionId, (const char*)buf->data + nWritten,
-                          bytes_to_send, flags, (UA_SOCKADDR*)&conn->sendAddr,
-                          conn->sendAddrLength);
-            if(n < 0) {
-                /* An error we cannot recover from? */
-                if(UA_ERRNO != UA_INTERRUPTED &&
-                   UA_ERRNO != UA_WOULDBLOCK &&
-                   UA_ERRNO != UA_AGAIN) {
-                    UA_LOG_SOCKET_ERRNO_WRAP(
-                       UA_LOG_ERROR(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
-                                    "UDP %u\t| Send failed with error %s",
-                                    (unsigned)connectionId, errno_str));
-                    UA_UNLOCK(&el->elMutex);
-                    UDP_shutdownConnection(cm, connectionId);
-                    UA_ByteString_clear(buf);
-                    return UA_STATUSCODE_BADCONNECTIONCLOSED;
+            for(uint32_t u32AddrIndex = 0; u32AddrIndex < conn->u32MulticastTxAddrListSize; u32AddrIndex++) {
+                struct OUL_NET_IpMreq tReq = {{0}, {OUL_NET_Htonl(conn->pu32MulticastTxAddrList[u32AddrIndex])},  -1};
+
+                if(0 != (ret = UA_setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &tReq, sizeof(tReq)))) {
+                    UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK, "Setsockopt failed with error code: %d", UA_ERRNO);
+                    break;
+                }
+                else {
+                    /* Send the full buffer. This may require several calls to send */
+                    size_t nWritten = 0;
+                    do {
+                        UA_SSIZE n = 0;
+                        do {
+                            UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                                        "UDP %u\t| Attempting to send", (unsigned)connectionId);
+
+                            /* Prevent OS signals when sending to a closed socket */
+                            int flags = MSG_NOSIGNAL;
+                            size_t bytes_to_send = buf->length - nWritten;
+                            n = UA_sendto((UA_FD)connectionId, (const char*)buf->data + nWritten,
+                                        bytes_to_send, flags, (UA_SOCKADDR*)&conn->sendAddr,
+                                        conn->sendAddrLength);
+                            if(n < 0) {
+                                /* An error we cannot recover from? */
+                                if(UA_ERRNO != UA_INTERRUPTED &&
+                                UA_ERRNO != UA_WOULDBLOCK &&
+                                UA_ERRNO != UA_AGAIN) {
+                                    UA_LOG_SOCKET_ERRNO_WRAP(
+                                    UA_LOG_ERROR(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                                                    "UDP %u\t| Send failed with error %s",
+                                                    (unsigned)connectionId, errno_str));
+                                    UDP_shutdownConnection(cm, connectionId);
+                                    ret = UA_STATUSCODE_BADCONNECTIONCLOSED;
+                                    break;
+                                }
+
+                                /* Poll for the socket resources to become available and retry
+                                * (blocking) */
+                                int poll_ret;
+                                UA_POLLFD tmp_poll_fd;
+                                tmp_poll_fd.fd = (UA_FD)connectionId;
+                                tmp_poll_fd.events = UA_POLLOUT;
+                                do {
+                                    poll_ret = UA_poll(&tmp_poll_fd, 1, 100);
+                                    if(poll_ret < 0 && UA_ERRNO != UA_INTERRUPTED) {
+                                        UA_LOG_SOCKET_ERRNO_WRAP(
+                                        UA_LOG_ERROR(el->eventLoop.logger,
+                                                        UA_LOGCATEGORY_NETWORK,
+                                                        "UDP %u\t| Send failed with error %s",
+                                                        (unsigned)connectionId, errno_str));
+                                        UDP_shutdownConnection(cm, connectionId);
+                                        ret = UA_STATUSCODE_BADCONNECTIONCLOSED;
+                                        break;
+                                    }
+                                } while(poll_ret <= 0);
+                            }
+
+                            if(ret != UA_STATUSCODE_GOOD) {
+                                break;
+                            }
+                        } while(n < 0);
+                        nWritten += (size_t)n;
+
+                        if(ret != UA_STATUSCODE_GOOD) {
+                            break;
+                        }
+                    } while(nWritten < buf->length);
                 }
 
-                /* Poll for the socket resources to become available and retry
-                 * (blocking) */
-                int poll_ret;
-                UA_POLLFD tmp_poll_fd;
-                tmp_poll_fd.fd = (UA_FD)connectionId;
-                tmp_poll_fd.events = UA_POLLOUT;
-                do {
-                    poll_ret = UA_poll(&tmp_poll_fd, 1, 100);
-                    if(poll_ret < 0 && UA_ERRNO != UA_INTERRUPTED) {
-                        UA_LOG_SOCKET_ERRNO_WRAP(
-                           UA_LOG_ERROR(el->eventLoop.logger,
-                                        UA_LOGCATEGORY_NETWORK,
-                                        "UDP %u\t| Send failed with error %s",
-                                        (unsigned)connectionId, errno_str));
-                        UA_UNLOCK(&el->elMutex);
-                        UDP_shutdownConnection(cm, connectionId);
-                        UA_ByteString_clear(buf);
-                        return UA_STATUSCODE_BADCONNECTIONCLOSED;
-                    }
-                } while(poll_ret <= 0);
+                if(ret != UA_STATUSCODE_GOOD) {
+                    break;
+                }
             }
-        } while(n < 0);
-        nWritten += (size_t)n;
-    } while(nWritten < buf->length);
+        }
+    }
 
     /* Free the buffer */
     UA_UNLOCK(&el->elMutex);
     UA_ByteString_clear(buf);
-    return UA_STATUSCODE_GOOD;
+
+    return ret;
 }
 
 static UA_StatusCode
@@ -1072,16 +957,6 @@ registerSocketAndDestinationForSend(const UA_KeyValueMap *params,
     if(res != UA_STATUSCODE_GOOD) {
         UA_close(newSock);
         return res;
-    }
-
-    /* Prepare socket for multicast */
-    MultiCastType mc = multiCastType(info);
-    if(mc != MULTICASTTYPE_NONE) {
-        res = setupSendMultiCast(newSock, info, params, mc, logger);
-        if(res != UA_STATUSCODE_GOOD) {
-            UA_close(newSock);
-            return res;
-        }
     }
 
     memcpy(&ufd->sendAddr, info->ai_addr, info->ai_addrlen);
@@ -1151,11 +1026,24 @@ UDP_openSendConnection(UA_POSIXConnectionManager *pcm, const UA_KeyValueMap *par
     conn->application = application;
     conn->context = context;
 
+    if(UA_STATUSCODE_GOOD != (res = setMulticastAddresses(el, params, conn)))
+    {
+        UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                       "UDP %u\t| Error setting multicast addresses, closing",
+                       (unsigned)newSock);
+        UA_close(newSock);
+        UA_free(conn);
+        return res;
+    }
+
     /* Register the fd to trigger when output is possible (the connection is open) */
     res = UA_EventLoopPOSIX_registerFD(el, &conn->rfd);
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
                        "UDP\t| Registering the socket for %s failed", hostname);
+        if(NULL != conn->pu32MulticastTxAddrList) {
+            UA_free(conn->pu32MulticastTxAddrList);
+        }
         UA_close(newSock);
         UA_free(conn);
         return res;

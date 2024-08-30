@@ -7,35 +7,27 @@
  *    Copyright 2017 (c) Thomas Stalder, Blue Time Concept SA
  */
 
+#include <open62541/config.h>
+/* Include architecture-specific definitions */
+#if defined(UA_ARCHITECTURE_WIN32)
+#include "win32/ua_architecture.h"
+#elif defined(UA_ARCHITECTURE_POSIX)
+#include "posix/ua_architecture.h"
+#elif defined(UA_ARCHITECTURE_OUL)
+#include "oul/ua_architecture.h"
+#endif
+
 #include "ua_discovery.h"
 #include "ua_server_internal.h"
 
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST
 
 #ifndef UA_ENABLE_AMALGAMATION
-#include "mdnsd/libmdnsd/xht.h"
-#include "mdnsd/libmdnsd/sdtxt.h"
+#include <libmdnsd/xht.h>
+#include <libmdnsd/sdtxt.h>
 #endif
 
 #include "../deps/mp_printf.h"
-
-#ifdef _WIN32
-/* inet_ntoa is deprecated on MSVC but used for compatibility */
-# define _WINSOCK_DEPRECATED_NO_WARNINGS
-# include <winsock2.h>
-# include <iphlpapi.h>
-# include <ws2tcpip.h>
-#else
-# include <sys/types.h>
-# include <sys/socket.h>
-# include <sys/time.h> // for struct timeval
-# include <netinet/in.h> // for struct ip_mreq
-# if defined(UA_HAS_GETIFADDR)
-#  include <ifaddrs.h>
-# endif /* UA_HAS_GETIFADDR */
-# include <net/if.h> /* for IFF_RUNNING */
-# include <netdb.h> // for recvfrom in cygwin
-#endif
 
 static struct serverOnNetwork_list_entry *
 mdns_record_add_or_get(UA_DiscoveryManager *dm, const char *record, const char *serverName,
@@ -86,7 +78,7 @@ UA_DiscoveryManager_addEntryToServersOnNetwork(UA_DiscoveryManager *dm,
     }
 
     UA_LOG_DEBUG(dm->logging, UA_LOGCATEGORY_SERVER,
-                "Multicast DNS: Add entry to ServersOnNetwork: %s (%*.s)",
+                "Multicast DNS: Add entry to ServersOnNetwork: %s (%.*s)",
                  fqdnMdnsRecord, (int)serverNameLen, serverName);
 
     struct serverOnNetwork_list_entry *listEntry = (serverOnNetwork_list_entry*)
@@ -132,61 +124,13 @@ UA_DiscoveryManager_addEntryToServersOnNetwork(UA_DiscoveryManager *dm,
     return UA_STATUSCODE_GOOD;
 }
 
-#ifdef _WIN32
-
-/* see http://stackoverflow.com/a/10838854/869402 */
-static IP_ADAPTER_ADDRESSES *
-getInterfaces(UA_DiscoveryManager *dm) {
-    IP_ADAPTER_ADDRESSES* adapter_addresses = NULL;
-
-    /* Start with a 16 KB buffer and resize if needed - multiple attempts in
-     * case interfaces change while we are in the middle of querying them. */
-    DWORD adapter_addresses_buffer_size = 16 * 1024;
-    for(size_t attempts = 0; attempts != 3; ++attempts) {
-        /* todo: malloc may fail: return a statuscode */
-        adapter_addresses = (IP_ADAPTER_ADDRESSES*)UA_malloc(adapter_addresses_buffer_size);
-        if(!adapter_addresses) {
-            UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_DISCOVERY,
-                         "GetAdaptersAddresses out of memory");
-            adapter_addresses = NULL;
-            break;
-        }
-        DWORD error = GetAdaptersAddresses(AF_UNSPEC,
-                                           GAA_FLAG_SKIP_ANYCAST |
-                                           GAA_FLAG_SKIP_DNS_SERVER |
-                                           GAA_FLAG_SKIP_FRIENDLY_NAME,
-                                           NULL, adapter_addresses,
-                                           &adapter_addresses_buffer_size);
-
-        if(ERROR_SUCCESS == error) {
-            break;
-        } else if (ERROR_BUFFER_OVERFLOW == error) {
-            /* Try again with the new size */
-            UA_free(adapter_addresses);
-            adapter_addresses = NULL;
-            continue;
-        }
-
-        /* Unexpected error */
-        UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_SERVER,
-                     "GetAdaptersAddresses returned an unexpected error. "
-                     "Not setting mDNS A records.");
-        UA_free(adapter_addresses);
-        adapter_addresses = NULL;
-        break;
-    }
-    return adapter_addresses;
-}
-
-#endif /* _WIN32 */
-
 UA_StatusCode
 UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
                                                     const char *fqdnMdnsRecord,
                                                     const char *serverName,
                                                     size_t serverNameLen) {
     UA_LOG_DEBUG(dm->logging, UA_LOGCATEGORY_SERVER,
-                 "Multicast DNS: Remove entry from ServersOnNetwork: %s (%*.s)",
+                 "Multicast DNS: Remove entry from ServersOnNetwork: %s (%.*s)",
                  fqdnMdnsRecord, (int)serverNameLen, serverName);
 
     struct serverOnNetwork_list_entry *entry =
@@ -239,7 +183,7 @@ UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
 static void
 mdns_append_path_to_url(UA_String *url, const char *path) {
     size_t pathLen = strlen(path);
-    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path 
+    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path
     /* todo: malloc may fail: return a statuscode */
     char *newUrl = (char *)UA_malloc(url->length + pathLen);
     memcpy(newUrl, url->data, url->length);
@@ -523,71 +467,15 @@ mdns_set_address_record_if(UA_DiscoveryManager *dm, const char *fullServiceDomai
 }
 
 /* Loop over network interfaces and run set_address_record on each */
-#ifdef _WIN32
 
-void mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
-                             const char *localDomain) {
-    IP_ADAPTER_ADDRESSES* adapter_addresses = getInterfaces(dm);
-    if(!adapter_addresses)
-        return;
-
-    /* Iterate through all of the adapters */
-    IP_ADAPTER_ADDRESSES* adapter = adapter_addresses;
-    for(; adapter != NULL; adapter = adapter->Next) {
-        /* Skip loopback adapters */
-        if(IF_TYPE_SOFTWARE_LOOPBACK == adapter->IfType)
-            continue;
-
-        /* Parse all IPv4 and IPv6 addresses */
-        IP_ADAPTER_UNICAST_ADDRESS* address = adapter->FirstUnicastAddress;
-        for(; NULL != address; address = address->Next) {
-            int family = address->Address.lpSockaddr->sa_family;
-            if(AF_INET == family) {
-                SOCKADDR_IN* ipv4 = (SOCKADDR_IN*)(address->Address.lpSockaddr); /* IPv4 */
-                mdns_set_address_record_if(dm, fullServiceDomain,
-                                           localDomain, (char *)&ipv4->sin_addr, 4);
-            } else if(AF_INET6 == family) {
-                /* IPv6 */
-#if 0
-                SOCKADDR_IN6* ipv6 = (SOCKADDR_IN6*)(address->Address.lpSockaddr);
-
-                char str_buffer[INET6_ADDRSTRLEN] = {0};
-                inet_ntop(AF_INET6, &(ipv6->sin6_addr), str_buffer, INET6_ADDRSTRLEN);
-
-                std::string ipv6_str(str_buffer);
-
-                /* Detect and skip non-external addresses */
-                UA_Boolean is_link_local(false);
-                UA_Boolean is_special_use(false);
-
-                if(0 == ipv6_str.find("fe")) {
-                    char c = ipv6_str[2];
-                    if(c == '8' || c == '9' || c == 'a' || c == 'b')
-                        is_link_local = true;
-                } else if (0 == ipv6_str.find("2001:0:")) {
-                    is_special_use = true;
-                }
-
-                if(!(is_link_local || is_special_use))
-                    ipAddrs.mIpv6.push_back(ipv6_str);
-#endif
-            }
-        }
-    }
-
-    /* Cleanup */
-    UA_free(adapter_addresses);
-    adapter_addresses = NULL;
-}
-
-#elif defined(UA_HAS_GETIFADDR)
+#if defined(UA_HAS_GETIFADDR)
 
 void
 mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
                         const char *localDomain) {
-    struct ifaddrs *ifaddr;
-    struct ifaddrs *ifa;
-    if(getifaddrs(&ifaddr) == -1) {
+    struct UA_ifaddrs *ifaddr;
+    struct UA_ifaddrs *ifa;
+    if(UA_getifaddrs(&ifaddr) == -1) {
         UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_SERVER,
                      "getifaddrs returned an unexpected error. Not setting mDNS A records.");
         return;
@@ -615,9 +503,9 @@ mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
     }
 
     /* Clean up */
-    freeifaddrs(ifaddr);
+    UA_freeifaddrs(ifaddr);
 }
-#else /* _WIN32 */
+#else /* UA_HAS_GETIFADDR */
 
 void
 mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
@@ -634,7 +522,7 @@ mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
     }
 }
 
-#endif /* _WIN32 */
+#endif /* UA_HAS_GETIFADDR */
 
 typedef enum {
     UA_DISCOVERY_TCP,    /* OPC UA TCP mapping */
@@ -754,19 +642,19 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         myPort = myPort / 10;
     }
 
-    struct addrinfo *infoptr;
-    int res = getaddrinfo((const char*)address->data, portStr, NULL, &infoptr);
+    struct UA_addrinfo *infoptr;
+    int res = UA_getaddrinfo((const char*)address->data, portStr, NULL, &infoptr);
     if(res != 0)
         return;
 
     /* Parse and process the message */
-    struct message mm;
+    static struct message mm;
     memset(&mm, 0, sizeof(struct message));
     UA_Boolean rr = message_parse(&mm, (unsigned char*)msg.data, msg.length);
     if(rr)
         mdnsd_in(dm->mdnsDaemon, &mm, infoptr->ai_addr,
                  (unsigned short)infoptr->ai_addrlen);
-    freeaddrinfo(infoptr);
+    UA_freeaddrinfo(infoptr);
 }
 
 void
@@ -790,10 +678,20 @@ sendMulticastMessages(UA_DiscoveryManager *dm) {
             UA_ByteString sendBuf = UA_BYTESTRING_NULL;
             UA_StatusCode rv = cm->allocNetworkBuffer(cm, dm->mdnsSendConnection,
                                                       &sendBuf, (size_t)len);
-            if(rv == UA_STATUSCODE_GOOD) {
+
+            if(UA_STATUSCODE_GOOD != rv) {
+                UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_DISCOVERY,
+                            "Network buffer allocation failed");
+            }
+            else {
                 memcpy(sendBuf.data, buf, sendBuf.length);
-                cm->sendWithConnection(cm, dm->mdnsSendConnection,
+                rv = cm->sendWithConnection(cm, dm->mdnsSendConnection,
                                        &UA_KEYVALUEMAP_NULL, &sendBuf);
+                if(UA_STATUSCODE_GOOD != rv)
+                {
+                    UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_DISCOVERY,
+                                "Send failed %s", UA_StatusCode_name(rv));
+                }
             }
         }
     }
@@ -834,7 +732,7 @@ addMdnsRecordForNetworkLayer(UA_DiscoveryManager *dm, const UA_String *appName,
     }
 
     if (hostname.length == 0) {
-	gethostname(hoststr, sizeof(hoststr)-1);
+	UA_gethostname(hoststr, sizeof(hoststr)-1);
 	hoststr[sizeof(hoststr)-1] = '\0';
 	hostname.data = (unsigned char *) hoststr;
 	hostname.length = strlen(hoststr);
@@ -882,7 +780,7 @@ discovery_createMulticastSocket(UA_Server* server, UA_DiscoveryManager *dm) {
     }
 
     /* Set up the parameters */
-    UA_KeyValuePair params[6];
+    UA_KeyValuePair params[7];
     size_t paramsSize = 5;
 
     UA_UInt16 port = 5353;
@@ -902,9 +800,15 @@ discovery_createMulticastSocket(UA_Server* server, UA_DiscoveryManager *dm) {
     params[4].key = UA_QUALIFIEDNAME(0, "ttl");
     UA_Variant_setScalar(&params[4].value, &ttl, &UA_TYPES[UA_TYPES_UINT32]);
     if(server->config.mdnsInterfaceIP.length > 0) {
-        params[5].key = UA_QUALIFIEDNAME(0, "interface");
-        UA_Variant_setScalar(&params[5].value, &server->config.mdnsInterfaceIP,
+        params[paramsSize].key = UA_QUALIFIEDNAME(0, "interface");
+        UA_Variant_setScalar(&params[paramsSize].value, &server->config.mdnsInterfaceIP,
                              &UA_TYPES[UA_TYPES_STRING]);
+        paramsSize++;
+    }
+    if(server->config.mdnsIpAddressListSize > 0) {
+        params[paramsSize].key = UA_QUALIFIEDNAME(0, "multicastAddrList");
+        UA_Variant_setArray(&params[paramsSize].value, server->config.mdnsIpAddressList,
+                            server->config.mdnsIpAddressListSize, &UA_TYPES[UA_TYPES_UINT32]);
         paramsSize++;
     }
 

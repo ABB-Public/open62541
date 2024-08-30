@@ -661,6 +661,11 @@ UA_EXPORT UA_ConnectionManager *
 UA_ConnectionManager_new_MQTT(const UA_String eventSourceName);
 
 /**
+ * MDNS Connection Manager
+ */
+UA_EXPORT UA_ConnectionManager *
+UA_ConnectionManager_new_Mdns(const UA_String eventSourceName);
+/**
  * Signal Interrupt Manager
  * ~~~~~~~~~~~~~~~~~~~~~~~~
  * Create an instance of the interrupt manager that handles POSX signals. This
