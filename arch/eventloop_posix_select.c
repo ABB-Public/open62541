@@ -7,6 +7,12 @@
 
 #include "eventloop_posix.h"
 
+#ifdef __musl__
+#include <time.h>
+#else
+#include <sys/time.h>
+#endif
+
 #if !defined(UA_HAVE_EPOLL)
 
 UA_StatusCode
@@ -72,24 +78,24 @@ UA_EventLoopPOSIX_deregisterFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
 }
 
 static UA_FD
-setFDSets(UA_EventLoopPOSIX *el, UA_FD_SET *readset, UA_FD_SET *writeset, UA_FD_SET *errset) {
+setFDSets(UA_EventLoopPOSIX *el, UA_fd_set *readset, UA_fd_set *writeset, UA_fd_set *errset) {
     UA_LOCK_ASSERT(&el->elMutex, 1);
 
-    FD_ZERO(readset);
-    FD_ZERO(writeset);
-    FD_ZERO(errset);
+    UA_FD_ZERO(readset);
+    UA_FD_ZERO(writeset);
+    UA_FD_ZERO(errset);
     UA_FD highestfd = UA_INVALID_FD;
     for(size_t i = 0; i < el->fdsSize; i++) {
         UA_FD currentFD = el->fds[i]->fd;
 
         /* Add to the fd_sets */
         if(el->fds[i]->listenEvents & UA_FDEVENT_IN)
-            FD_SET(currentFD, readset);
+            UA_FD_SET(currentFD, readset);
         if(el->fds[i]->listenEvents & UA_FDEVENT_OUT)
-            FD_SET(currentFD, writeset);
+            UA_FD_SET(currentFD, writeset);
 
         /* Always return errors */
-        FD_SET(currentFD, errset);
+        UA_FD_SET(currentFD, errset);
 
         /* Highest fd? */
         if(currentFD > highestfd || highestfd == UA_INVALID_FD)
@@ -103,7 +109,7 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
     UA_assert(listenTimeout >= 0);
     UA_LOCK_ASSERT(&el->elMutex, 1);
 
-    UA_FD_SET readset, writeset, errset;
+    UA_fd_set readset, writeset, errset;
     UA_FD highestfd = setFDSets(el, &readset, &writeset, &errset);
 
     /* Nothing to do? */
@@ -141,11 +147,11 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
 
         /* Event signaled for the fd? */
         short event = 0;
-        if(FD_ISSET(rfd->fd, &readset)) {
+        if(UA_FD_ISSET(rfd->fd, &readset)) {
             event = UA_FDEVENT_IN;
-        } else if(FD_ISSET(rfd->fd, &writeset)) {
+        } else if(UA_FD_ISSET(rfd->fd, &writeset)) {
             event = UA_FDEVENT_OUT;
-        } else if(FD_ISSET(rfd->fd, &errset)) {
+        } else if(UA_FD_ISSET(rfd->fd, &errset)) {
             event = UA_FDEVENT_ERR;
         } else {
             continue;
