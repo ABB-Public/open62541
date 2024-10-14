@@ -7,12 +7,6 @@
 
 #include "eventloop_posix.h"
 
-#ifdef __musl__
-#include <time.h>
-#else
-#include <sys/time.h>
-#endif
-
 #if !defined(UA_HAVE_EPOLL)
 
 UA_StatusCode
