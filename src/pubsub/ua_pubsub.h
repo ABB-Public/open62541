@@ -24,7 +24,7 @@
 #include "ua_pubsub_networkmessage.h"
 
 #ifdef UA_ENABLE_PUBSUB_SKS
-#include <ua_pubsub_keystorage.h>
+#include "ua_pubsub_keystorage.h"
 #endif
 
 _UA_BEGIN_DECLS
@@ -161,6 +161,8 @@ typedef struct UA_PubSubConnection {
     LIST_HEAD(, UA_ReaderGroup) readerGroups;
 
     UA_UInt16 configurationFreezeCounter;
+
+    UA_DateTime silenceErrorUntil; /* Avoid generating too many logs */
 
     UA_Boolean deleteFlag; /* To be deleted - in addition to the PubSubState */
     UA_DelayedCallback dc; /* For delayed freeing */

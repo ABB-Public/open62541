@@ -58,6 +58,7 @@ publisherIdIsMatching(UA_NetworkMessage *msg, UA_Variant publisherId) {
         default:
             return false;
     }
+    return true;
 }
 
 UA_StatusCode
@@ -809,7 +810,7 @@ DataSetReader_processRaw(UA_Server *server, UA_ReaderGroup *rg,
         UA_FieldTargetVariable *tv =
             &dsr->config.subscribedDataSet.subscribedDataSetTarget.targetVariables[i];
 
-        if(tv->beforeWrite || tv->externalDataValue) {
+        if(tv->externalDataValue) {
             if(tv->beforeWrite)
                 tv->beforeWrite(server, &dsr->identifier, &dsr->linkedReaderGroup,
                                 &tv->targetVariable.targetNodeId,

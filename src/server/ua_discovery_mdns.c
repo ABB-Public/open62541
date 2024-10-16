@@ -29,6 +29,26 @@
 
 #include "../deps/mp_printf.h"
 
+#if 0 // Disabled by JuiceShop
+#ifdef _WIN32
+/* inet_ntoa is deprecated on MSVC but used for compatibility */
+# define _WINSOCK_DEPRECATED_NO_WARNINGS
+# include <winsock2.h>
+# include <iphlpapi.h>
+# include <ws2tcpip.h>
+#else
+# include <sys/types.h>
+# include <sys/socket.h>
+# include <sys/time.h> // for struct timeval
+# include <netinet/in.h> // for struct ip_mreq
+# if defined(UA_HAS_GETIFADDR)
+#  include <ifaddrs.h>
+# endif /* UA_HAS_GETIFADDR */
+# include <net/if.h> /* for IFF_RUNNING */
+# include <netdb.h> // for recvfrom in cygwin
+#endif
+#endif
+
 static struct serverOnNetwork_list_entry *
 mdns_record_add_or_get(UA_DiscoveryManager *dm, const char *record, const char *serverName,
                        size_t serverNameLen, UA_Boolean createNew) {
@@ -123,6 +143,56 @@ UA_DiscoveryManager_addEntryToServersOnNetwork(UA_DiscoveryManager *dm,
 
     return UA_STATUSCODE_GOOD;
 }
+
+#if 0 // Disabled by JuiceShop
+#ifdef _WIN32
+
+/* see http://stackoverflow.com/a/10838854/869402 */
+static IP_ADAPTER_ADDRESSES *
+getInterfaces(UA_DiscoveryManager *dm) {
+    IP_ADAPTER_ADDRESSES* adapter_addresses = NULL;
+
+    /* Start with a 16 KB buffer and resize if needed - multiple attempts in
+     * case interfaces change while we are in the middle of querying them. */
+    DWORD adapter_addresses_buffer_size = 16 * 1024;
+    for(size_t attempts = 0; attempts != 3; ++attempts) {
+        /* todo: malloc may fail: return a statuscode */
+        adapter_addresses = (IP_ADAPTER_ADDRESSES*)UA_malloc(adapter_addresses_buffer_size);
+        if(!adapter_addresses) {
+            UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_DISCOVERY,
+                         "GetAdaptersAddresses out of memory");
+            adapter_addresses = NULL;
+            break;
+        }
+        DWORD error = GetAdaptersAddresses(AF_UNSPEC,
+                                           GAA_FLAG_SKIP_ANYCAST |
+                                           GAA_FLAG_SKIP_DNS_SERVER |
+                                           GAA_FLAG_SKIP_FRIENDLY_NAME,
+                                           NULL, adapter_addresses,
+                                           &adapter_addresses_buffer_size);
+
+        if(ERROR_SUCCESS == error) {
+            break;
+        } else if (ERROR_BUFFER_OVERFLOW == error) {
+            /* Try again with the new size */
+            UA_free(adapter_addresses);
+            adapter_addresses = NULL;
+            continue;
+        }
+
+        /* Unexpected error */
+        UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_SERVER,
+                     "GetAdaptersAddresses returned an unexpected error. "
+                     "Not setting mDNS A records.");
+        UA_free(adapter_addresses);
+        adapter_addresses = NULL;
+        break;
+    }
+    return adapter_addresses;
+}
+
+#endif /* _WIN32 */
+#endif
 
 UA_StatusCode
 UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
@@ -467,8 +537,64 @@ mdns_set_address_record_if(UA_DiscoveryManager *dm, const char *fullServiceDomai
 }
 
 /* Loop over network interfaces and run set_address_record on each */
+#if 0 // Disabled by JuiceShop, previously "#ifdef _WIN32" was used
 
-#if defined(UA_HAS_GETIFADDR)
+void mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
+                             const char *localDomain) {
+    IP_ADAPTER_ADDRESSES* adapter_addresses = getInterfaces(dm);
+    if(!adapter_addresses)
+        return;
+
+    /* Iterate through all of the adapters */
+    IP_ADAPTER_ADDRESSES* adapter = adapter_addresses;
+    for(; adapter != NULL; adapter = adapter->Next) {
+        /* Skip loopback adapters */
+        if(IF_TYPE_SOFTWARE_LOOPBACK == adapter->IfType)
+            continue;
+
+        /* Parse all IPv4 and IPv6 addresses */
+        IP_ADAPTER_UNICAST_ADDRESS* address = adapter->FirstUnicastAddress;
+        for(; NULL != address; address = address->Next) {
+            int family = address->Address.lpSockaddr->sa_family;
+            if(AF_INET == family) {
+                SOCKADDR_IN* ipv4 = (SOCKADDR_IN*)(address->Address.lpSockaddr); /* IPv4 */
+                mdns_set_address_record_if(dm, fullServiceDomain,
+                                           localDomain, (char *)&ipv4->sin_addr, 4);
+            } else if(AF_INET6 == family) {
+                /* IPv6 */
+#if 0
+                SOCKADDR_IN6* ipv6 = (SOCKADDR_IN6*)(address->Address.lpSockaddr);
+
+                char str_buffer[INET6_ADDRSTRLEN] = {0};
+                inet_ntop(AF_INET6, &(ipv6->sin6_addr), str_buffer, INET6_ADDRSTRLEN);
+
+                std::string ipv6_str(str_buffer);
+
+                /* Detect and skip non-external addresses */
+                UA_Boolean is_link_local(false);
+                UA_Boolean is_special_use(false);
+
+                if(0 == ipv6_str.find("fe")) {
+                    char c = ipv6_str[2];
+                    if(c == '8' || c == '9' || c == 'a' || c == 'b')
+                        is_link_local = true;
+                } else if (0 == ipv6_str.find("2001:0:")) {
+                    is_special_use = true;
+                }
+
+                if(!(is_link_local || is_special_use))
+                    ipAddrs.mIpv6.push_back(ipv6_str);
+#endif
+            }
+        }
+    }
+
+    /* Cleanup */
+    UA_free(adapter_addresses);
+    adapter_addresses = NULL;
+}
+
+#elif defined(UA_HAS_GETIFADDR)
 
 void
 mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,

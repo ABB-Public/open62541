@@ -666,6 +666,18 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
         return UA_STATUSCODE_BADCONNECTIONREJECTED;
     }
 
+#if 0 // Disabled by JuiceShop
+    /* Enable multicast if this is a multicast address */
+    if(mc != MULTICASTTYPE_NONE) {
+        res = setupListenMultiCast(listenSocket, info, params,
+                                   mc, el->eventLoop.logger);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_close(listenSocket);
+            return res;
+        }
+    }
+#endif
+
     /* Validation is complete - close and return */
     if(validate) {
         UA_close(listenSocket);
@@ -694,6 +706,7 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
         UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
                        "UDP %u\t| Error setting multicast addresses, closing",
                        (unsigned)listenSocket);
+        UA_free(newudpfd);
         UA_close(listenSocket);
         return res;
     }
@@ -958,6 +971,18 @@ registerSocketAndDestinationForSend(const UA_KeyValueMap *params,
         UA_close(newSock);
         return res;
     }
+
+#if 0 // Disabled by JuiceShop
+    /* Prepare socket for multicast */
+    MultiCastType mc = multiCastType(info);
+    if(mc != MULTICASTTYPE_NONE) {
+        res = setupSendMultiCast(newSock, info, params, mc, logger);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_close(newSock);
+            return res;
+        }
+    }
+#endif
 
     memcpy(&ufd->sendAddr, info->ai_addr, info->ai_addrlen);
     ufd->sendAddrLength = info->ai_addrlen;
