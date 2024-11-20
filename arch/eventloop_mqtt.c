@@ -421,8 +421,6 @@ findTopicConnection(MQTTConnectionManager *mcm, uintptr_t id) {
 static void
 MQTTKeepAliveCallback(void *app, MQTTBrokerConnection *bc) {
     (void)app;
-    if(bc->lastSendTime + (bc->keepalive * UA_DATETIME_SEC) > UA_DateTime_nowMonotonic())
-        return;
     mqtt_ping(&bc->client);
     __mqtt_send(&bc->client);
 }
