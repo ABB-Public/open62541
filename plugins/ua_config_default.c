@@ -21,11 +21,12 @@
 #include <open62541/plugin/pki_default.h>
 #include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/server_config_default.h>
+#include <ua_server_config.h>
 
 #include "../deps/mp_printf.h"
 
 #include <stdio.h>
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
 # include <winsock2.h>
 #else
 # include <unistd.h>
@@ -50,6 +51,9 @@ UA_DURATIONRANGE(UA_Duration min, UA_Duration max) {
 #ifdef UA_ENABLE_ENCRYPTION
 static UA_StatusCode
 readPrivateKeyPassword(UA_ByteString *password) {
+#if 1
+    return UA_STATUSCODE_BADNOTIMPLEMENTED;
+#else
     /* Read from stdin */
     char buf[256];
     fputs("Private key requires a password. Enter and press return: ", stdout);
@@ -66,6 +70,7 @@ readPrivateKeyPassword(UA_ByteString *password) {
 
     *password = UA_BYTESTRING_ALLOC(buf);
     return UA_STATUSCODE_GOOD;
+#endif
 }
 #endif
 
@@ -203,13 +208,6 @@ const UA_ConnectionConfig UA_ConnectionConfig_default = {
 /* Default Server Settings */
 /***************************/
 
-#define MANUFACTURER_NAME "open62541"
-#define PRODUCT_NAME "open62541 OPC UA Server"
-#define PRODUCT_URI "http://open62541.org"
-#define APPLICATION_NAME "open62541-based OPC UA Application"
-#define APPLICATION_URI "urn:unconfigured:application"
-#define APPLICATION_URI_SERVER "urn:open62541.server.application"
-
 #define SECURITY_POLICY_SIZE 6
 
 #define STRINGIFY(arg) #arg
@@ -315,13 +313,14 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
             conf->eventLoop->registerEventSource(conf->eventLoop, (UA_EventSource *)udpCM);
 
         /* Add the Ethernet connection manager */
-#ifdef __linux__
+#if defined(UA_ARCHITECTURE_POSIX) && (defined(__linux__))
         UA_ConnectionManager *ethCM =
             UA_ConnectionManager_new_POSIX_Ethernet(UA_STRING("eth connection manager"));
         if(ethCM)
             conf->eventLoop->registerEventSource(conf->eventLoop, (UA_EventSource *)ethCM);
 #endif
 
+#if 0
         /* Add the interrupt manager */
         UA_InterruptManager *im = UA_InterruptManager_new_POSIX(UA_STRING("interrupt manager"));
         if(im) {
@@ -330,6 +329,7 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
             UA_LOG_WARNING(conf->logging, UA_LOGCATEGORY_USERLAND,
                            "Cannot create the Interrupt Manager (only relevant if used)");
         }
+#endif
 #ifdef UA_ENABLE_MQTT
         /* Add the MQTT connection manager */
         UA_ConnectionManager *mqttCM =
@@ -358,20 +358,17 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
 
     /* Server Description */
     UA_BuildInfo_clear(&conf->buildInfo);
-    conf->buildInfo.productUri = UA_STRING_ALLOC(PRODUCT_URI);
-    conf->buildInfo.manufacturerName = UA_STRING_ALLOC(MANUFACTURER_NAME);
-    conf->buildInfo.productName = UA_STRING_ALLOC(PRODUCT_NAME);
-    conf->buildInfo.softwareVersion =
-        UA_STRING_ALLOC(VERSION(UA_OPEN62541_VER_MAJOR, UA_OPEN62541_VER_MINOR,
-                                UA_OPEN62541_VER_PATCH, UA_OPEN62541_VER_LABEL));
-    conf->buildInfo.buildNumber = UA_STRING_ALLOC(__DATE__ " " __TIME__);
-    conf->buildInfo.buildDate = UA_DateTime_now();
+    conf->buildInfo.productUri       = UA_STRING_ALLOC(UA_C_SERVER_PRODUCT_URI);
+    conf->buildInfo.manufacturerName = UA_STRING_ALLOC(UA_C_SERVER_MANUFACTURER_NAME);
+    conf->buildInfo.productName      = UA_STRING_ALLOC(UA_C_SERVER_PRODUCT_NAME);
+    conf->buildInfo.softwareVersion  = UA_STRING_ALLOC(UA_C_SERVER_VERSION);
+    conf->buildInfo.buildNumber      = UA_STRING_ALLOC(UA_C_SERVER_BUILDNUMBER);
+    conf->buildInfo.buildDate        = UA_C_SERVER_BUILDDATE;
 
     UA_ApplicationDescription_clear(&conf->applicationDescription);
-    conf->applicationDescription.applicationUri = UA_STRING_ALLOC(APPLICATION_URI_SERVER);
-    conf->applicationDescription.productUri = UA_STRING_ALLOC(PRODUCT_URI);
-    conf->applicationDescription.applicationName =
-        UA_LOCALIZEDTEXT_ALLOC("en", APPLICATION_NAME);
+    conf->applicationDescription.applicationUri  = UA_STRING_ALLOC(UA_C_SERVER_APPLICATION_URI);
+    conf->applicationDescription.productUri      = UA_STRING_ALLOC(UA_C_SERVER_PRODUCT_URI);
+    conf->applicationDescription.applicationName = UA_LOCALIZEDTEXT_ALLOC("", UA_C_SERVER_APPLICATION_NAME);
     conf->applicationDescription.applicationType = UA_APPLICATIONTYPE_SERVER;
     /* conf->applicationDescription.gatewayServerUri = UA_STRING_NULL; */
     /* conf->applicationDescription.discoveryProfileUri = UA_STRING_NULL; */
@@ -1152,7 +1149,7 @@ UA_ClientConfig_setDefault(UA_ClientConfig *config) {
     /* With encryption enabled, the applicationUri needs to match the URI from
      * the certificate */
     if(!config->clientDescription.applicationUri.data)
-        config->clientDescription.applicationUri = UA_STRING_ALLOC(APPLICATION_URI);
+        config->clientDescription.applicationUri = UA_STRING_ALLOC(UA_C_CLIENT_APPLICATION_URI);
     if(config->clientDescription.applicationType == 0)
         config->clientDescription.applicationType = UA_APPLICATIONTYPE_CLIENT;
 
@@ -1333,7 +1330,7 @@ UA_ClientConfig_setDefaultEncryption(UA_ClientConfig *config,
     /*                    "Could not add SecurityPolicy#Basic256 with error code %s", */
     /*                    UA_StatusCode_name(retval)); */
     /* } */
-                  
+
     retval = UA_SecurityPolicy_Aes256Sha256RsaPss(&config->securityPolicies[config->securityPoliciesSize],
                                                   localCertificate, decryptedPrivateKey, config->logging);
     if(retval == UA_STATUSCODE_GOOD) {
@@ -1392,7 +1389,6 @@ UA_ClientConfig_setAuthenticationCert(UA_ClientConfig *config,
                    "Certificate authentication with LibreSSL as crypto backend is not supported.");
     return UA_STATUSCODE_BADNOTIMPLEMENTED;
 #endif
-
     /* Create UserIdentityToken */
     UA_X509IdentityToken* identityToken = UA_X509IdentityToken_new();
     if(!identityToken)
