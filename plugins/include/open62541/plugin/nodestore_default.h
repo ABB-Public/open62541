@@ -18,6 +18,13 @@ _UA_BEGIN_DECLS
 UA_EXPORT UA_StatusCode
 UA_Nodestore_HashMap(UA_Nodestore *ns);
 
+//! @brief  Resolve reference type index by reference type node ID
+//! @param  nsCtx Pointer to node store context
+//! @param  nodeId Reference type node ID
+//! @return Reference type index on success or -1 on error
+UA_EXPORT int
+UA_NodeMap_getReferenceType(void *nsCtx, const UA_NodeId nodeId);
+
 /* The ZipTree Nodestore holds all nodes in RAM in a tree structure. The lookup
  * time is about O(log n). Adding/removing nodes does not require resizing of
  * the underlying array with the linear overhead.

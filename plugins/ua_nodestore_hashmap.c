@@ -61,7 +61,8 @@ static UA_UInt32 const primes[] = {
     134217689, 268435399,  536870909,  1073741789, 2147483647,  4294967291
 };
 
-static UA_UInt32 mod(UA_UInt32 h, UA_UInt32 size) { return h % size; }
+// had to rename the following function from mod to modulo because otherwise it conflicts with x86_64 assembly instruction 'mod'
+static UA_UInt32 modulo(UA_UInt32 h, UA_UInt32 size) { return h % size; }
 static UA_UInt32 mod2(UA_UInt32 h, UA_UInt32 size) { return 1 + (h % (size - 2)); }
 
 static UA_UInt16
@@ -83,7 +84,7 @@ static UA_NodeMapSlot *
 findFreeSlot(const UA_NodeMap *ns, const UA_NodeId *nodeid) {
     UA_UInt32 h = UA_NodeId_hash(nodeid);
     UA_UInt32 size = ns->size;
-    UA_UInt64 idx = mod(h, size); /* Use 64bit container to avoid overflow  */
+    UA_UInt64 idx = modulo(h, size); /* Use 64bit container to avoid overflow  */
     UA_UInt32 startIdx = (UA_UInt32)idx;
     UA_UInt32 hash2 = mod2(h, size);
 
@@ -211,7 +212,7 @@ static UA_NodeMapSlot *
 findOccupiedSlot(const UA_NodeMap *ns, const UA_NodeId *nodeid) {
     UA_UInt32 h = UA_NodeId_hash(nodeid);
     UA_UInt32 size = ns->size;
-    UA_UInt64 idx = mod(h, size); /* Use 64bit container to avoid overflow */
+    UA_UInt64 idx = modulo(h, size); /* Use 64bit container to avoid overflow */
     UA_UInt32 hash2 = mod2(h, size);
     UA_UInt32 startIdx = (UA_UInt32)idx;
 
@@ -353,7 +354,7 @@ UA_NodeMap_insertNode(void *context, UA_Node *node,
          * create children while there are still other nodes which need to be
          * created. Thus the node ids may collide. */
         UA_UInt32 size = ns->size;
-        UA_UInt64 identifier = mod(50000 + size+1, UA_UINT32_MAX); /* Use 64bit to
+        UA_UInt64 identifier = modulo(50000 + size+1, UA_UINT32_MAX); /* Use 64bit to
                                                                     * avoid overflow */
         UA_UInt32 increase = mod2(ns->count+1, size);
         UA_UInt32 startId = (UA_UInt32)identifier; /* mod ensures us that the id
@@ -447,6 +448,23 @@ UA_NodeMap_replaceNode(void *context, UA_Node *node) {
     oldEntry->deleted = true;
     cleanupNodeMapEntry(oldEntry);
     return UA_STATUSCODE_GOOD;
+}
+
+int
+UA_NodeMap_getReferenceType(void *nsCtx, const UA_NodeId nodeId) {
+    UA_NodeMap* ns      = (UA_NodeMap*)nsCtx;
+    int         nResult = -1;
+
+    for(UA_Byte u8RefType = 0; u8RefType < ns->referenceTypeCounter; u8RefType++)
+    {
+        if(UA_NodeId_equal(&ns->referenceTypeIds[u8RefType], &nodeId))
+        {
+            nResult = (int) u8RefType;
+            break;
+        }
+    }
+
+    return nResult;
 }
 
 static const UA_NodeId *

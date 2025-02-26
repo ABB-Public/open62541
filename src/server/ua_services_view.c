@@ -433,14 +433,14 @@ UA_StatusCode
 UA_Server_browseRecursive(UA_Server *server, const UA_BrowseDescription *bd,
                           size_t *resultsSize, UA_ExpandedNodeId **results,
                           UA_Boolean includeStartNodes) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
 
     /* Set the list of relevant reference types */
     UA_ReferenceTypeSet refTypes;
     UA_StatusCode retval = referenceTypeIndices(server, &bd->referenceTypeId,
                                                 &refTypes, bd->includeSubtypes);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_UNLOCK(&server->serviceMutex);
+        unlockServer(server);
         return retval;
     }
 
@@ -448,7 +448,7 @@ UA_Server_browseRecursive(UA_Server *server, const UA_BrowseDescription *bd,
     retval = browseRecursive(server, 1, &bd->nodeId, bd->browseDirection,
                              &refTypes, bd->nodeClassMask, includeStartNodes, resultsSize, results);
 
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return retval;
 }
 
@@ -786,17 +786,14 @@ browse(struct BrowseContext *bc) {
     /* Check AccessControl rights */
     if(bc->session != &bc->server->adminSession) {
         UA_LOCK_ASSERT(&bc->server->serviceMutex, 1);
-        UA_UNLOCK(&bc->server->serviceMutex);
         if(!bc->server->config.accessControl.
            allowBrowseNode(bc->server, &bc->server->config.accessControl,
                            &bc->session->sessionId, bc->session->sessionHandle,
                            &descr->nodeId, node->head.context)) {
-            UA_LOCK(&bc->server->serviceMutex);
             UA_NODESTORE_RELEASE(bc->server, node);
             bc->status = UA_STATUSCODE_BADUSERACCESSDENIED;
             return;
         }
-        UA_LOCK(&bc->server->serviceMutex);
     }
 
     /* Browse the node */
@@ -991,9 +988,9 @@ UA_Server_browse(UA_Server *server, UA_UInt32 maxReferences,
                  const UA_BrowseDescription *bd) {
     UA_BrowseResult result;
     UA_BrowseResult_init(&result);
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     Operation_Browse(server, &server->adminSession, &maxReferences, bd, &result);
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return result;
 }
 
@@ -1100,10 +1097,10 @@ UA_Server_browseNext(UA_Server *server, UA_Boolean releaseContinuationPoint,
                      const UA_ByteString *continuationPoint) {
     UA_BrowseResult result;
     UA_BrowseResult_init(&result);
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     Operation_BrowseNext(server, &server->adminSession, &releaseContinuationPoint,
                          continuationPoint, &result);
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return result;
 }
 
@@ -1376,9 +1373,9 @@ translateBrowsePathToNodeIds(UA_Server *server,
 UA_BrowsePathResult
 UA_Server_translateBrowsePathToNodeIds(UA_Server *server,
                                        const UA_BrowsePath *browsePath) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     UA_BrowsePathResult result = translateBrowsePathToNodeIds(server, browsePath);
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return result;
 }
 
@@ -1445,9 +1442,9 @@ browseSimplifiedBrowsePath(UA_Server *server, const UA_NodeId origin,
 UA_BrowsePathResult
 UA_Server_browseSimplifiedBrowsePath(UA_Server *server, const UA_NodeId origin,
                            size_t browsePathSize, const UA_QualifiedName *browsePath) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     UA_BrowsePathResult bpr = browseSimplifiedBrowsePath(server, origin, browsePathSize, browsePath);
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return bpr;
 }
 

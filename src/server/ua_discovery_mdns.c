@@ -7,16 +7,6 @@
  *    Copyright 2017 (c) Thomas Stalder, Blue Time Concept SA
  */
 
-#include <open62541/config.h>
-/* Include architecture-specific definitions */
-#if defined(UA_ARCHITECTURE_WIN32)
-#include "win32/ua_architecture.h"
-#elif defined(UA_ARCHITECTURE_POSIX)
-#include "posix/ua_architecture.h"
-#elif defined(UA_ARCHITECTURE_OUL)
-#include "oul/ua_architecture.h"
-#endif
-
 #include "ua_discovery.h"
 #include "ua_server_internal.h"
 
@@ -29,13 +19,14 @@
 
 #include "../deps/mp_printf.h"
 
-#if 0 // Disabled by JuiceShop
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
 /* inet_ntoa is deprecated on MSVC but used for compatibility */
 # define _WINSOCK_DEPRECATED_NO_WARNINGS
 # include <winsock2.h>
 # include <iphlpapi.h>
 # include <ws2tcpip.h>
+#elif defined(UA_ARCHITECTURE_OUL)
+# include "oul/ua_architecture.h"
 #else
 # include <sys/types.h>
 # include <sys/socket.h>
@@ -46,7 +37,6 @@
 # endif /* UA_HAS_GETIFADDR */
 # include <net/if.h> /* for IFF_RUNNING */
 # include <netdb.h> // for recvfrom in cygwin
-#endif
 #endif
 
 static struct serverOnNetwork_list_entry *
@@ -144,8 +134,7 @@ UA_DiscoveryManager_addEntryToServersOnNetwork(UA_DiscoveryManager *dm,
     return UA_STATUSCODE_GOOD;
 }
 
-#if 0 // Disabled by JuiceShop
-#ifdef _WIN32
+#ifdef UA_ARCHITECTURE_WIN32
 
 /* see http://stackoverflow.com/a/10838854/869402 */
 static IP_ADAPTER_ADDRESSES *
@@ -191,8 +180,7 @@ getInterfaces(UA_DiscoveryManager *dm) {
     return adapter_addresses;
 }
 
-#endif /* _WIN32 */
-#endif
+#endif /* UA_ARCHITECTURE_WIN32 */
 
 UA_StatusCode
 UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
@@ -253,7 +241,7 @@ UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
 static void
 mdns_append_path_to_url(UA_String *url, const char *path) {
     size_t pathLen = strlen(path);
-    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path
+    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path 
     /* todo: malloc may fail: return a statuscode */
     char *newUrl = (char *)UA_malloc(url->length + pathLen);
     memcpy(newUrl, url->data, url->length);
@@ -537,7 +525,7 @@ mdns_set_address_record_if(UA_DiscoveryManager *dm, const char *fullServiceDomai
 }
 
 /* Loop over network interfaces and run set_address_record on each */
-#if 0 // Disabled by JuiceShop, previously "#ifdef _WIN32" was used
+#ifdef UA_ARCHITECTURE_WIN32
 
 void mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
                              const char *localDomain) {
@@ -631,7 +619,7 @@ mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
     /* Clean up */
     UA_freeifaddrs(ifaddr);
 }
-#else /* UA_HAS_GETIFADDR */
+#else /* UA_ARCHITECTURE_WIN32 */
 
 void
 mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
@@ -648,7 +636,7 @@ mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
     }
 }
 
-#endif /* UA_HAS_GETIFADDR */
+#endif /* UA_ARCHITECTURE_WIN32 */
 
 typedef enum {
     UA_DISCOVERY_TCP,    /* OPC UA TCP mapping */
@@ -808,8 +796,7 @@ sendMulticastMessages(UA_DiscoveryManager *dm) {
             if(UA_STATUSCODE_GOOD != rv) {
                 UA_LOG_ERROR(dm->logging, UA_LOGCATEGORY_DISCOVERY,
                             "Network buffer allocation failed");
-            }
-            else {
+            } else {
                 memcpy(sendBuf.data, buf, sendBuf.length);
                 rv = cm->sendWithConnection(cm, dm->mdnsSendConnection,
                                        &UA_KEYVALUEMAP_NULL, &sendBuf);
@@ -1098,14 +1085,14 @@ void
 UA_Server_setServerOnNetworkCallback(UA_Server *server,
                                      UA_Server_serverOnNetworkCallback cb,
                                      void* data) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     UA_DiscoveryManager *dm = (UA_DiscoveryManager*)
         getServerComponentByName(server, UA_STRING("discovery"));
     if(dm) {
         dm->serverOnNetworkCallback = cb;
         dm->serverOnNetworkCallbackData = data;
     }
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
 }
 
 static void
@@ -1328,10 +1315,9 @@ UA_Discovery_addRecord(UA_DiscoveryManager *dm, const UA_String *servername,
 
     /* The first 63 characters of the hostname (or less) */
     size_t maxHostnameLen = UA_MIN(hostnameLen, 63);
-    char localDomain[65];
+    char localDomain[71];
     memcpy(localDomain, hostname->data, maxHostnameLen);
-    localDomain[maxHostnameLen] = '.';
-    localDomain[maxHostnameLen+1] = '\0';
+    strcpy(localDomain + maxHostnameLen, ".local.");
 
     /* [servername]-[hostname]._opcua-tcp._tcp.local. 86400 IN SRV 0 5 port [hostname]. */
     r = mdnsd_unique(dm->mdnsDaemon, fullServiceDomain,
