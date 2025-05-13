@@ -1,95 +1,118 @@
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// (C) Copyright 2021 ABB. All rights reserved.
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//! @file    ua_log_stdout.c
-//! @brief   STDOUT wrapping for open62541
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/* This work is licensed under a Creative Commons CCZero 1.0 Universal License.
+ * See http://creativecommons.org/publicdomain/zero/1.0/ for more information.
+ *
+ *    Copyright 2016-2018 (c) Fraunhofer IOSB (Author: Julius Pfrommer)
+ *    Copyright 2017 (c) Thomas Stalder, Blue Time Concept SA
+ */
 
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/types.h>
 
-#include <oul.log.h>
-
 #include <stdio.h>
 
-static const char* apcCategoryNames[] =
-{
-    "open62541:network",
-    "open62541:channel",
-    "open62541:session",
-    "open62541:server",
-    "open62541:client",
-    "open62541:userland",
-    "open62541:securitypolicy",
-    "open62541:eventloop",
-    "open62541:pubsub",
-    "open62541:discovery"
-};
+/* ANSI escape sequences for color output taken from here:
+ * https://stackoverflow.com/questions/3219393/stdlib-and-colored-output-in-c*/
 
-//----------------------------------------------------------------------------------------------------------------------------
-//! @internal
-static void UA_Log_Stdout_log(void* pContext, UA_LogLevel eLevel, UA_LogCategory eCategory, const char* pcMessage, va_list tArgs)
-{
-    UA_LogLevel eMinLevel = (UA_LogLevel) pContext;
-    uint32_t u32Category = 1 << eCategory;
-    if(eLevel >= eMinLevel)
-    {
-        uint32_t u32Severity = OUL_LOG_S_DEBUG;
+#ifdef UA_ARCHITECTURE_POSIX
+# define ANSI_COLOR_RED     "\x1b[31m"
+# define ANSI_COLOR_GREEN   "\x1b[32m"
+# define ANSI_COLOR_YELLOW  "\x1b[33m"
+# define ANSI_COLOR_BLUE    "\x1b[34m"
+# define ANSI_COLOR_MAGENTA "\x1b[35m"
+# define ANSI_COLOR_CYAN    "\x1b[36m"
+# define ANSI_COLOR_RESET   "\x1b[0m"
+#else
+# define ANSI_COLOR_RED     ""
+# define ANSI_COLOR_GREEN   ""
+# define ANSI_COLOR_YELLOW  ""
+# define ANSI_COLOR_BLUE    ""
+# define ANSI_COLOR_MAGENTA ""
+# define ANSI_COLOR_CYAN    ""
+# define ANSI_COLOR_RESET   ""
+#endif
 
-        switch(eLevel)
-        {
-            case UA_LOGLEVEL_TRACE:
-            case UA_LOGLEVEL_DEBUG:
-            case UA_LOGLEVEL_INFO:
-                u32Severity = OUL_LOG_S_DEBUG;
-                break;
-            case UA_LOGLEVEL_WARNING:
-                u32Severity = OUL_LOG_S_WARNING;
-                break;
-            case UA_LOGLEVEL_ERROR:
-            case UA_LOGLEVEL_FATAL:
-                u32Severity = OUL_LOG_S_ERROR;
-                break;
-        }
+static
+const char *logLevelNames[6] = {"trace", "debug",
+                                ANSI_COLOR_GREEN "info",
+                                ANSI_COLOR_YELLOW "warn",
+                                ANSI_COLOR_RED "error",
+                                ANSI_COLOR_MAGENTA "fatal"};
+static const char *
+logCategoryNames[UA_LOGCATEGORIES] =
+    {"network", "channel", "session", "server", "client",
+     "userland", "securitypolicy", "eventloop", "pubsub", "discovery"};
 
-        if(eCategory >= sizeof(apcCategoryNames) / sizeof(apcCategoryNames[0]))
-        {
-            OUL_LogFunction(OUL_LOG_S_ERROR, "UA", "Unknown", "Unknown category %d", u32Category);
-        }
-        else if (u32Category & UA_LOGFILTER)
-        {
-            OUL_LogVFunction(u32Severity, "UA", apcCategoryNames[eCategory], pcMessage, tArgs);
-        }
-    }
+/* Protect crosstalk during logging via global lock. Use a spinlock as we cannot
+ * statically initialize a global lock across all platforms. */
+#if UA_MULTITHREADING >= 100
+void * volatile logSpinLock = NULL;
+static UA_INLINE void spinLock(void) {
+    while(UA_atomic_cmpxchg(&logSpinLock, NULL, (void*)0x1) != NULL) {}
+}
+static UA_INLINE void spinUnLock(void) {
+    UA_atomic_xchg(&logSpinLock, NULL);
+}
+#endif
+
+#ifdef __clang__
+__attribute__((__format__(__printf__, 4 , 0)))
+#endif
+static void
+UA_Log_Stdout_log(void *context, UA_LogLevel level, UA_LogCategory category,
+                  const char *msg, va_list args) {
+    /* MinLevel encoded in the context pointer */
+    UA_LogLevel minLevel = (UA_LogLevel)(uintptr_t)context;
+    if(minLevel > level)
+        return;
+
+    UA_Int64 tOffset = UA_DateTime_localTimeUtcOffset();
+    UA_DateTimeStruct dts = UA_DateTime_toStruct(UA_DateTime_now() + tOffset);
+
+    int logLevelSlot = ((int)level / 100) - 1;
+    if(logLevelSlot < 0 || logLevelSlot > 5)
+        logLevelSlot = 5; /* Set to fatal if the level is outside the range */
+
+    /* Lock */
+#if UA_MULTITHREADING >= 100
+    spinLock();
+#endif
+
+    /* Log */
+    printf("[%04u-%02u-%02u %02u:%02u:%02u.%03u (UTC%+05d)] %s/%s" ANSI_COLOR_RESET "\t",
+           dts.year, dts.month, dts.day, dts.hour, dts.min, dts.sec, dts.milliSec,
+           (int)(tOffset / UA_DATETIME_SEC / 36), logLevelNames[logLevelSlot],
+           logCategoryNames[category]);
+    vprintf(msg, args);
+    printf("\n");
+    fflush(stdout);
+
+    /* Unlock */
+#if UA_MULTITHREADING >= 100
+    spinUnLock();
+#endif
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-//! @internal
-static void UA_Log_Stdout_clear(UA_Logger* ptLogger)
-{
-    UA_free(ptLogger);
+static void
+UA_Log_Stdout_clear(UA_Logger *logger) {
+    UA_free(logger);
 }
 
-const UA_Logger UA_Log_Stdout_ = {UA_Log_Stdout_log, NULL, UA_Log_Stdout_clear};
+const UA_Logger UA_Log_Stdout_ = {UA_Log_Stdout_log, NULL, NULL};
 const UA_Logger *UA_Log_Stdout = &UA_Log_Stdout_;
 
-//----------------------------------------------------------------------------------------------------------------------------
-//! @internal
-UA_Logger UA_Log_Stdout_withLevel(UA_LogLevel eMinLevel)
-{
-    UA_Logger tLogger = {UA_Log_Stdout_log, (void*)eMinLevel, UA_Log_Stdout_clear};
-    return tLogger;
+UA_Logger
+UA_Log_Stdout_withLevel(UA_LogLevel minlevel) {
+    UA_Logger logger =
+        {UA_Log_Stdout_log, (void*)(uintptr_t)minlevel, NULL};
+    return logger;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-//! @internal
-UA_Logger* UA_Log_Stdout_new(UA_LogLevel eMinlevel)
-{
-    UA_Logger *ptLogger = (UA_Logger*)UA_malloc(sizeof(UA_Logger));
-    if(NULL != ptLogger)
-    {
-        *ptLogger = UA_Log_Stdout_withLevel(eMinlevel);
-        ptLogger->clear = UA_Log_Stdout_clear;
-    }
-    return ptLogger;
+UA_Logger *
+UA_Log_Stdout_new(UA_LogLevel minlevel) {
+    UA_Logger *logger = (UA_Logger*)UA_malloc(sizeof(UA_Logger));
+    if(!logger)
+        return NULL;
+    *logger = UA_Log_Stdout_withLevel(minlevel);
+    logger->clear = UA_Log_Stdout_clear;
+    return logger;
 }
