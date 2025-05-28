@@ -241,7 +241,7 @@ UA_DiscoveryManager_removeEntryFromServersOnNetwork(UA_DiscoveryManager *dm,
 static void
 mdns_append_path_to_url(UA_String *url, const char *path) {
     size_t pathLen = strlen(path);
-    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path 
+    size_t newUrlLen = url->length + pathLen; //size of the new url string incl. the path
     /* todo: malloc may fail: return a statuscode */
     char *newUrl = (char *)UA_malloc(url->length + pathLen);
     memcpy(newUrl, url->data, url->length);
@@ -745,16 +745,7 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         return;
 
     char portStr[16];
-    UA_UInt16 myPort = *port;
-    for(size_t i = 0; i < 16; i++) {
-        if(myPort == 0) {
-            portStr[i] = 0;
-            break;
-        }
-        unsigned char rem = (unsigned char)(myPort % 10);
-        portStr[i] = (char)(rem + 48); /* to ascii */
-        myPort = myPort / 10;
-    }
+    snprintf(portStr, sizeof(portStr), "%u", *port);
 
     struct UA_addrinfo *infoptr;
     int res = UA_getaddrinfo((const char*)address->data, portStr, NULL, &infoptr);
@@ -766,8 +757,7 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
     memset(&mm, 0, sizeof(struct message));
     UA_Boolean rr = message_parse(&mm, (unsigned char*)msg.data, msg.length);
     if(rr)
-        mdnsd_in(dm->mdnsDaemon, &mm, infoptr->ai_addr,
-                 (unsigned short)infoptr->ai_addrlen);
+        mdnsd_in(dm->mdnsDaemon, &mm, infoptr->ai_addr, *port);
     UA_freeaddrinfo(infoptr);
 }
 
@@ -845,11 +835,16 @@ addMdnsRecordForNetworkLayer(UA_DiscoveryManager *dm, const UA_String *appName,
     }
 
     if (hostname.length == 0) {
-	UA_gethostname(hoststr, sizeof(hoststr)-1);
-	hoststr[sizeof(hoststr)-1] = '\0';
-	hostname.data = (unsigned char *) hoststr;
-	hostname.length = strlen(hoststr);
+        UA_gethostname(hoststr, sizeof(hoststr)-1);
+        hoststr[sizeof(hoststr)-1] = '\0';
+        hostname.data = (unsigned char *) hoststr;
+        hostname.length = strlen(hoststr);
     }
+
+    if(hostname.length == 0 && appName != NULL) {
+        hostname = *appName;
+    }
+
     retval = UA_Discovery_addRecord(dm, appName, &hostname, port,
                                     &path, UA_DISCOVERY_TCP, true,
                                     dm->serverConfig->mdnsConfig.serverCapabilities,

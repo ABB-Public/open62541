@@ -505,7 +505,7 @@ setupListenMultiCast(UA_POSIXConnectionManager *pcm, UA_FD fd, UA_ADDRINFO *info
         for(uint32_t u32AddrIndex = 0; u32AddrIndex < conn->u32MulticastTxAddrListSize; u32AddrIndex++) {
 
             req.ipv4.imr_multiaddr = UA_inet_addr(multicastAddr);
-            req.ipv4.imr_address.s_addr = UA_ntohl(conn->pu32MulticastTxAddrList[u32AddrIndex]);
+            req.ipv4.imr_address.s_addr = conn->pu32MulticastTxAddrList[u32AddrIndex];
             req.ipv4.imr_ifindex = -1;
 
             if(info->ai_family == AF_INET && multiCastType == MULTICASTTYPE_IPV4) {
@@ -1029,7 +1029,7 @@ UDP_sendWithConnection(UA_ConnectionManager *cm, uintptr_t connectionId,
         if(0 != conn->u32MulticastTxAddrListSize && NULL != conn->pu32MulticastTxAddrList) {
 
             for(uint32_t u32AddrIndex = 0; u32AddrIndex < conn->u32MulticastTxAddrListSize; u32AddrIndex++) {
-                struct OUL_NET_IpMreq tReq = {{0}, {OUL_NET_Htonl(conn->pu32MulticastTxAddrList[u32AddrIndex])},  -1};
+                struct OUL_NET_IpMreq tReq = {{0}, {conn->pu32MulticastTxAddrList[u32AddrIndex]},  -1};
 
                 if(0 != (ret = UA_setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &tReq, sizeof(tReq)))) {
                     UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK, "Setsockopt failed with error code: %d", UA_ERRNO);
