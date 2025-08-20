@@ -40,6 +40,7 @@
 #define UA_AGAIN EAGAIN /* the same as wouldblock on nearly every system */
 #define UA_INPROGRESS EINPROGRESS
 #define UA_WOULDBLOCK EWOULDBLOCK
+#define UA_NOBUFS ENOBUFS
 #define UA_POLLIN POLLIN
 #define UA_POLLOUT POLLOUT
 #define UA_SHUT_RDWR SHUT_RDWR

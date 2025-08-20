@@ -228,16 +228,30 @@ TCP_listenSocketCallback(UA_ConnectionManager *cm, TCP_FD *conn, short event) {
     UA_SOCKLEN remote_size = sizeof(remote);
     UA_FD newsockfd = UA_accept(conn->rfd.fd, (UA_SOCKADDR*)&remote, &remote_size);
     if(newsockfd == UA_INVALID_FD) {
-        /* Temporary error -- retry */
-        if(UA_ERRNO == UA_INTERRUPTED)
+        int err = UA_ERRNO;
+
+        /* Temporary errors -- retry */
+        if(err == UA_INTERRUPTED)
             return;
+
+        /* Unexpected errors handled gracefully -- log and return */
+        if(err == UA_WOULDBLOCK ||
+           err == UA_AGAIN ||
+           err == UA_NOBUFS ||
+           err == UA_CONNABORTED)
+        {
+            UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                            "TCP %u\t| Unexpected error occurred (%d)",
+                            (unsigned)conn->rfd.fd, err);
+            return;
+        }
 
         /* Close the listen socket */
         if(cm->eventSource.state != UA_EVENTSOURCESTATE_STOPPING) {
             UA_LOG_SOCKET_ERRNO_WRAP(
                 UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
-                               "TCP %u\t| Error %s, closing the server socket",
-                               (unsigned)conn->rfd.fd, errno_str));
+                               "TCP %u\t| Error %s (%d), closing the server socket",
+                               (unsigned)conn->rfd.fd, errno_str, err));
         }
 
         TCP_shutdown(cm, conn);

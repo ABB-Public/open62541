@@ -38,6 +38,7 @@ typedef SSIZE_T ssize_t;
 #define UA_AGAIN EAGAIN /* the same as wouldblock on nearly every system */
 #define UA_INPROGRESS WSAEINPROGRESS
 #define UA_WOULDBLOCK WSAEWOULDBLOCK
+#define UA_NOBUFS WSAENOBUFS
 #define UA_POLLIN POLLRDNORM
 #define UA_POLLOUT POLLWRNORM
 #define UA_SHUT_RDWR SD_BOTH
