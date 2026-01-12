@@ -7,23 +7,9 @@
 #ifndef UA_NODESTORE_DEFAULT_H_
 #define UA_NODESTORE_DEFAULT_H_
 
-#include <open62541/plugin/nodestore.h>
+#include <open62541/server.h>
 
 _UA_BEGIN_DECLS
-
-/* The HashMap Nodestore holds all nodes in RAM in single hash-map. Lookip is
- * done based on hashing/comparison of the NodeId with close to O(1) lookup
- * time. However, sometimes the underlying array has to be resized when nodes
- * are added/removed. This can take O(n) time. */
-UA_EXPORT UA_StatusCode
-UA_Nodestore_HashMap(UA_Nodestore *ns);
-
-//! @brief  Resolve reference type index by reference type node ID
-//! @param  nsCtx Pointer to node store context
-//! @param  nodeId Reference type node ID
-//! @return Reference type index on success or -1 on error
-UA_EXPORT int
-UA_NodeMap_getReferenceType(void *nsCtx, const UA_NodeId nodeId);
 
 /* The ZipTree Nodestore holds all nodes in RAM in a tree structure. The lookup
  * time is about O(log n). Adding/removing nodes does not require resizing of
@@ -31,8 +17,7 @@ UA_NodeMap_getReferenceType(void *nsCtx, const UA_NodeId nodeId);
  *
  *  For most usage scenarios the hash-map Nodestore will be faster.
  */
-UA_EXPORT UA_StatusCode
-UA_Nodestore_ZipTree(UA_Nodestore *ns);
+UA_EXPORT UA_Nodestore * UA_Nodestore_ZipTree(void);
 
 _UA_END_DECLS
 

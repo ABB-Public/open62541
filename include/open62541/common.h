@@ -18,6 +18,8 @@
 _UA_BEGIN_DECLS
 
 /**
+ * .. _common:
+ *
  * Common Definitions
  * ==================
  *
@@ -31,6 +33,7 @@ _UA_BEGIN_DECLS
  * the node type. Possible attributes are as follows: */
 
 typedef enum {
+    UA_ATTRIBUTEID_INVALID                 = 0,
     UA_ATTRIBUTEID_NODEID                  = 1,
     UA_ATTRIBUTEID_NODECLASS               = 2,
     UA_ATTRIBUTEID_BROWSENAME              = 3,
@@ -61,6 +64,13 @@ typedef enum {
 } UA_AttributeId;
 
 /**
+ * Returns a readable attribute name like "NodeId" or "Invalid" if the attribute
+ * does not exist. */
+
+UA_EXPORT const char *
+UA_AttributeId_name(UA_AttributeId attrId);
+
+/**
  * .. _access-level-mask:
  *
  * Access Level Masks
@@ -69,7 +79,9 @@ typedef enum {
  * with the overall access level. */
 
 #define UA_ACCESSLEVELMASK_READ           (0x01u << 0u)
+#define UA_ACCESSLEVELMASK_CURRENTREAD    (0x01u << 0u)
 #define UA_ACCESSLEVELMASK_WRITE          (0x01u << 1u)
+#define UA_ACCESSLEVELMASK_CURRENTWRITE   (0x01u << 1u)
 #define UA_ACCESSLEVELMASK_HISTORYREAD    (0x01u << 2u)
 #define UA_ACCESSLEVELMASK_HISTORYWRITE   (0x01u << 3u)
 #define UA_ACCESSLEVELMASK_SEMANTICCHANGE (0x01u << 4u)
@@ -147,7 +159,6 @@ typedef enum {
  *
  * Rule Handling
  * -------------
- *
  * The RuleHanding settings define how error cases that result from rules in the
  * OPC UA specification shall be handled. The rule handling can be softened,
  * e.g. to workaround misbehaving implementations or to mitigate the impact of
@@ -163,7 +174,6 @@ typedef enum {
 /**
  * Order
  * -----
- *
  * The Order enum is used to establish an absolute ordering between elements.
  */
 
@@ -174,19 +184,61 @@ typedef enum {
 } UA_Order;
 
 /**
+ * .. _application-notification:
+ *
+ * Application Notification
+ * ------------------------
+ *
+ * The ApplicationNotification enum indicates the type of notification for the
+ * server/client in which the corresponding callback is configured.
+ *
+ * The notification comes with a key-value map for the payload. Future
+ * additional payload members are added to the end of the payload. So that the
+ * names, type and also index of the payload members is stable. */
+
+typedef enum {
+    /* Lifetime notifications, no payload */
+    UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STARTED,
+    UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_SHUTDOWN, /* preparing shutdown */
+    UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPING, /* shutdown begins now */
+    UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPED,
+
+    /* Processing of a service request or response. The server-side processing
+     * of a request can be asynchronous. The existence of a yet-unfinished async
+     * operation from the request is signaled with the _SERVICE_ASYNC enum. The
+     * _SERVICE_END enum is signalled eventually, once all async operations from
+     * the service request are completed.
+     *
+     * 0:securechannel-id [UInt32]
+     *    Identifier of the SecureChannel to which the Session is connected.
+     * 0:session-id [NodeId]
+     *    Identifier of the Session for/from which the Service is requested.
+     *    This is the ns=0;i=0 NodeId if no Session is bound to the receiving
+     *    SecureChannel.
+     * 0:request-id [UInt32]
+     *    Identifier of the RequestId for the Request/Response pair.
+     * 0:service-type [NodeId]
+     *    DataType identifier for the Request (server) or Response (client). */
+    UA_APPLICATIONNOTIFICATIONTYPE_SERVICE_BEGIN,
+    UA_APPLICATIONNOTIFICATIONTYPE_SERVICE_ASYNC,
+    UA_APPLICATIONNOTIFICATIONTYPE_SERVICE_END
+} UA_ApplicationNotificationType;
+
+/**
  * Connection State
  * ---------------- */
 
 typedef enum {
     UA_CONNECTIONSTATE_CLOSED,     /* The socket has been closed and the connection
                                     * will be deleted */
-    UA_CONNECTIONSTATE_OPENING,    /* The socket is open, but the HEL/ACK handshake
-                                    * is not done */
+    UA_CONNECTIONSTATE_OPENING,    /* The socket is open, but the connection not yet
+                                      fully established */
     UA_CONNECTIONSTATE_ESTABLISHED,/* The socket is open and the connection
                                     * configured */
-    UA_CONNECTIONSTATE_CLOSING     /* The socket is closing down */
+    UA_CONNECTIONSTATE_CLOSING,    /* The socket is closing down */
+    UA_CONNECTIONSTATE_BLOCKING,   /* Listening disabled (e.g. max connections reached) */
+    UA_CONNECTIONSTATE_REOPENING   /* Listening resumed after being blocked */
 } UA_ConnectionState;
-
 
 typedef enum {
     UA_SECURECHANNELSTATE_CLOSED = 0,
@@ -216,7 +268,6 @@ typedef enum {
 /**
  * Statistic Counters
  * ------------------
- *
  * The stack manages statistic counters for SecureChannels and Sessions.
  *
  * The Session layer counters are matching the counters of the
@@ -254,7 +305,6 @@ typedef struct {
 /**
  * Lifecycle States
  * ----------------
- *
  * Generic lifecycle states. The STOPPING state indicates that the lifecycle is
  * being terminated. But it might take time to (asynchronously) perform a
  * graceful shutdown. */
@@ -264,25 +314,6 @@ typedef enum {
     UA_LIFECYCLESTATE_STARTED,
     UA_LIFECYCLESTATE_STOPPING
 } UA_LifecycleState;
-
-/**
- * Forward Declarations
- * --------------------
- * Opaque pointers used in Client, Server and PubSub. */
-
-struct UA_Server;
-typedef struct UA_Server UA_Server;
-
-struct UA_ServerConfig;
-typedef struct UA_ServerConfig UA_ServerConfig;
-
-typedef void (*UA_ServerCallback)(UA_Server *server, void *data);
-
-struct UA_Client;
-typedef struct UA_Client UA_Client;
-
-/**
- * .. include:: util.rst */
 
 _UA_END_DECLS
 

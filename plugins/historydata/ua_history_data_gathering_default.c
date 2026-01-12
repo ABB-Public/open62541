@@ -17,6 +17,7 @@ typedef struct UA_NodeIdStoreContextItem_gathering_default {
     UA_NodeId nodeId;
     UA_HistorizingNodeIdSettings setting;
     UA_MonitoredItemCreateResult monitoredResult;
+    UA_Boolean paused;
 } UA_NodeIdStoreContextItem_gathering_default;
 
 typedef struct UA_NodeIdStoreContextChunk {
@@ -246,6 +247,8 @@ setValue_gathering_default(UA_Server *server,
     if (!item) {
         return;
     }
+    if(item->paused)
+        return;
     if (item->setting.historizingUpdateStrategy == UA_HISTORIZINGUPDATESTRATEGY_VALUESET) {
         item->setting.historizingBackend.serverSetHistoryData(server,
                                                               item->setting.historizingBackend.context,
@@ -296,3 +299,11 @@ UA_HistoryDataGathering_Circular(size_t initialNodeIdStoreSize) {
     gathering.registerNodeId = &registerNodeId_gathering_circular;
     return gathering;
 }
+
+void gathering_default_pauseRecording(UA_HistoryDataGathering *gathering, const UA_NodeId *nodeId, UA_Boolean pause) {
+    UA_NodeIdStoreContext *ctx = (UA_NodeIdStoreContext*)gathering->context;
+    UA_NodeIdStoreContextItem_gathering_default *item = getNodeIdStoreContextItem_gathering_default(ctx, nodeId);
+    if(item)
+        item->paused = pause;
+}
+
