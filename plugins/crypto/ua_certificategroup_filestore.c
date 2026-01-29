@@ -640,6 +640,18 @@ FileCertStore_verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteStr
         return retval;
     }
 
+#if defined(UA_ARCHITECTURE_OUL) && OUL_PF_O_EMPTY_TRUSTLIST
+    // Empty trustlist is no problemo
+    UA_TrustListDataType tTrustList;
+    context->store->getTrustList(context->store, &tTrustList);
+    if (tTrustList.trustedCertificatesSize == 0)
+    {
+        OUL_LOG_WARNING("Empty trust list, certificate automatically trusted");
+        UA_TrustListDataType_clear(&tTrustList);
+        return UA_STATUSCODE_GOOD;
+    }
+#endif // UA_ARCHITECTURE_OUL
+
     retval = context->store->verifyCertificate(context->store, certificate);
     if(retval == UA_STATUSCODE_BADCERTIFICATEUNTRUSTED ||
        retval == UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED ||
