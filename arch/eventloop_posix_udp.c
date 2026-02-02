@@ -394,6 +394,7 @@ setTimeToLive(UA_SOCKET sockfd, UA_UInt32 messageTTL,
     return UA_STATUSCODE_GOOD;
 }
 
+#if !defined(UA_ARCHITECTURE_OUL)
 static UA_StatusCode
 setReuseAddress(UA_SOCKET sockfd, UA_Boolean enableReuse, const UA_Logger *logger) {
     /* Set reuse address -> enables sharing of the same listening address on
@@ -410,6 +411,7 @@ setReuseAddress(UA_SOCKET sockfd, UA_Boolean enableReuse, const UA_Logger *logge
     }
     return UA_STATUSCODE_GOOD;
 }
+#endif 
 
 #ifdef __linux__
 static UA_StatusCode
@@ -470,7 +472,11 @@ setConnectionConfig(UA_FD socket, const UA_KeyValueMap *params,
         UA_KeyValueMap_getScalar(params, UDPConfigParameters[UDP_PARAMINDEX_REUSE].name,
                                  &UA_TYPES[UA_TYPES_BOOLEAN]);
     if(enableReuse)
+#if defined(UA_ARCHITECTURE_OUL)
+        res |= UA_EventLoopPOSIX_setReusable(socket);
+#else
         res |= setReuseAddress(socket, *enableReuse, logger);
+#endif
 
 #ifdef __linux__
     const UA_UInt32 *socketPriority = (const UA_UInt32*)
