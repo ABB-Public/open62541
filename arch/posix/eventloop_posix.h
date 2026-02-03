@@ -308,6 +308,11 @@ typedef int SOCKET;
 #define UA_FILENAME_MAX FILENAME_MAX
 
 #elif defined(UA_ARCHITECTURE_OUL)
+_UA_BEGIN_DECLS
+char *
+_UA_dirname_minimal(char *path);
+_UA_END_DECLS
+
 # include "oul/ua_architecture.h"
 #endif
 

@@ -11,7 +11,7 @@
 
 #if defined(UA_ARCHITECTURE_POSIX) || defined(UA_ARCHITECTURE_WIN32) || defined(__APPLE__) || defined(UA_ARCHITECTURE_OUL)
 
-#ifdef UA_ARCHITECTURE_WIN32
+#if defined(UA_ARCHITECTURE_WIN32) || defined(UA_ARCHITECTURE_OUL)
 /* TODO: Replace with a proper dirname implementation. This is a just minimal
  * implementation working with correct input data. */
 char *
