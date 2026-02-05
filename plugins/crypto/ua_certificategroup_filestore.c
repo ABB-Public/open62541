@@ -47,17 +47,20 @@ typedef struct {
 
 static int
 mkpath(char *dir, UA_MODE mode) {
-#ifdef UA_ARCHITECTURE_OUL
-    UA_STAT sb;
-#else
+#ifndef UA_ARCHITECTURE_OUL
     struct UA_STAT sb;
 #endif // UA_ARCHITECTURE_OUL
 
     if(dir == NULL)
         return 1;
 
+#ifdef UA_ARCHITECTURE_OUL
+    if(OUL_FS_DirectoryExists(dir))
+        return 0;  /* Directory already exist */
+#else
     if(!UA_stat(dir, &sb))
         return 0;  /* Directory already exist */
+#endif // UA_ARCHITECTURE_OUL
 
     size_t len = strlen(dir) + 1;
     char *tmp_dir = (char*)UA_malloc(len);
