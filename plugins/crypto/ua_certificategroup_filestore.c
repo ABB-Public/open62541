@@ -76,6 +76,8 @@ mkpath(char *dir, UA_MODE mode) {
     return UA_mkdir(dir, mode);
 }
 
+#ifdef UA_ARCHITECTURE_OUL
+
 static UA_StatusCode
 removeAllFilesFromDir(const char *const path, bool removeSubDirs) {
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
@@ -89,41 +91,19 @@ removeAllFilesFromDir(const char *const path, bool removeSubDirs) {
     if(!dir)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-#ifdef UA_ARCHITECTURE_OUL
-    struct OUL_FS_DirectoryEntry *dirent;
-#else
     struct UA_DIRENT *dirent;
-#endif // UA_ARCHITECTURE_OUL
     while((dirent = UA_readdir(dir)) != NULL) {
-#ifdef UA_ARCHITECTURE_OUL
         if(dirent->eType == UA_DT_REG) {
-#else
-        if(dirent->d_type == UA_DT_REG) {
-#endif // UA_ARCHITECTURE_OUL
             char file_name[UA_FILENAME_MAX];
-#ifdef UA_ARCHITECTURE_OUL
             mp_snprintf(file_name, UA_FILENAME_MAX, "%s/%s", path,
                         (char *)dirent->acName);
-#else
-            mp_snprintf(file_name, UA_FILENAME_MAX, "%s/%s", path,
-                        (char *)dirent->d_name);
-#endif// UA_ARCHITECTURE_OUL
             UA_remove(file_name);
         }
-#ifdef UA_ARCHITECTURE_OUL
         if(dirent->eType == UA_DT_DIR && removeSubDirs == true) {
             char *directory = (char*)dirent->acName;
-#else
-        if(dirent->d_type == UA_DT_DIR && removeSubDirs == true) {
-            char *directory = (char*)dirent->d_name;
-#endif
 
             char dir_name[UA_FILENAME_MAX];
-#ifdef UA_ARCHITECTURE_OUL
             mp_snprintf(dir_name, UA_FILENAME_MAX, "%s/%s", path, (char *)dirent->acName);
-#else
-            mp_snprintf(dir_name, UA_FILENAME_MAX, "%s/%s", path, (char *)dirent->d_name);
-#endif // UA_ARCHITECTURE_OUL
 
             if(strlen(directory) == 1 && directory[0] == '.')
                 continue;
@@ -137,6 +117,50 @@ removeAllFilesFromDir(const char *const path, bool removeSubDirs) {
 
     return retval;
 }
+
+#else // UA_ARCHITECTURE_OUL
+
+static UA_StatusCode
+removeAllFilesFromDir(const char *const path, bool removeSubDirs) {
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+
+    /* Check parameter */
+    if(path == NULL)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
+    /* remove all regular files from directory */
+    UA_DIR *dir = UA_opendir(path);
+    if(!dir)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
+    struct UA_DIRENT *dirent;
+    while((dirent = UA_readdir(dir)) != NULL) {
+        if(dirent->d_type == UA_DT_REG) {
+            char file_name[UA_FILENAME_MAX];
+            mp_snprintf(file_name, UA_FILENAME_MAX, "%s/%s", path,
+                        (char *)dirent->d_name);
+            UA_remove(file_name);
+        }
+        if(dirent->d_type == UA_DT_DIR && removeSubDirs == true) {
+            char *directory = (char*)dirent->d_name;
+
+            char dir_name[UA_FILENAME_MAX];
+            mp_snprintf(dir_name, UA_FILENAME_MAX, "%s/%s", path, (char *)dirent->d_name);
+
+            if(strlen(directory) == 1 && directory[0] == '.')
+                continue;
+            if(strlen(directory) == 2 && directory[0] == '.' && directory[1] == '.')
+                continue;
+
+            retval = removeAllFilesFromDir(dir_name, removeSubDirs);
+        }
+    }
+    UA_closedir(dir);
+
+    return retval;
+}
+
+#endif // UA_ARCHITECTURE_OUL
 
 static UA_StatusCode
 getCertFileName(const char *path, const UA_ByteString *certificate,
