@@ -55,7 +55,7 @@ int musl_inet_pton(int af, const char * UA_RESTRICT s, void * UA_RESTRICT a0)
 		}
 		return 0;
 	} else if (af!=AF_INET6) {
-		errno = EAFNOSUPPORT;
+		errno = UA_AFNOSUPPORT;
 		return -1;
 	}
 
