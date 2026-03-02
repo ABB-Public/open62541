@@ -221,6 +221,7 @@ UA_EventLoopPOSIX_start(UA_EventLoopPOSIX *el) {
     }
 #endif
 
+#ifndef UA_ARCHITECTURE_OUL
     /* Create the self-pipe */
     int err = UA_EventLoopPOSIX_pipe(el->selfpipe);
     if(err != 0) {
@@ -231,6 +232,7 @@ UA_EventLoopPOSIX_start(UA_EventLoopPOSIX *el) {
         UA_UNLOCK(&el->elMutex);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
+#endif // UA_ARCHITECTURE_OUL
 
     /* Create the epoll socket */
 #ifdef UA_HAVE_EPOLL
@@ -1100,37 +1102,6 @@ int UA_EventLoopPOSIX_pipe(SOCKET fds[2]) {
 #ifdef __APPLE__
     close(lst);
 #endif
-
-    UA_EventLoopPOSIX_setNoSigPipe(fds[0]);
-    UA_EventLoopPOSIX_setReusable(fds[0]);
-    UA_EventLoopPOSIX_setNonBlocking(fds[0]);
-    UA_EventLoopPOSIX_setNoSigPipe(fds[1]);
-    UA_EventLoopPOSIX_setReusable(fds[1]);
-    UA_EventLoopPOSIX_setNonBlocking(fds[1]);
-    return err;
-}
-#elif defined(UA_ARCHITECTURE_OUL)
-/* No native pipe support - Creates a loopback TCP connection as a "fake pipe" */
-int UA_EventLoopPOSIX_pipe(UA_SOCKET fds[2]) {
-    UA_SOCKADDR_IN inaddr;
-    memset(&inaddr, 0, sizeof(inaddr));
-    inaddr.sin_family = AF_INET;
-    inaddr.sin_addr.s_addr = UA_htonl(INADDR_LOOPBACK);
-    inaddr.sin_port = 0;
-
-    UA_SOCKET lst = UA_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    UA_bind(lst, (UA_SOCKADDR *)&inaddr, sizeof(inaddr));
-    UA_listen(lst, 1);
-
-    UA_SOCKADDR_STORAGE addr;
-    memset(&addr, 0, sizeof(addr));
-    int len = sizeof(addr);
-    UA_getsockname(lst, (UA_SOCKADDR*)&addr, (UA_SOCKLEN*)&len);
-
-    fds[0] = UA_socket(AF_INET, SOCK_STREAM, 0);
-    int err = UA_connect(fds[0], (UA_SOCKADDR*)&addr, len);
-    fds[1] = UA_accept(lst, 0, 0);
-    UA_close(lst);
 
     UA_EventLoopPOSIX_setNoSigPipe(fds[0]);
     UA_EventLoopPOSIX_setReusable(fds[0]);
