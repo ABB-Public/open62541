@@ -221,7 +221,6 @@ UA_EventLoopPOSIX_start(UA_EventLoopPOSIX *el) {
     }
 #endif
 
-#ifndef UA_ARCHITECTURE_OUL
     /* Create the self-pipe */
     int err = UA_EventLoopPOSIX_pipe(el->selfpipe);
     if(err != 0) {
@@ -232,7 +231,6 @@ UA_EventLoopPOSIX_start(UA_EventLoopPOSIX *el) {
         UA_UNLOCK(&el->elMutex);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
-#endif // UA_ARCHITECTURE_OUL
 
     /* Create the epoll socket */
 #ifdef UA_HAVE_EPOLL
@@ -1076,7 +1074,50 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
 
 #endif /* defined(UA_HAVE_EPOLL) */
 
-#if defined(UA_ARCHITECTURE_WIN32) || defined(__APPLE__)
+#ifdef UA_ARCHITECTURE_OUL
+/* No native pipe support - Creates a loopback TCP connection as a "fake pipe" */
+int UA_EventLoopPOSIX_pipe(UA_SOCKET fds[2]) {
+    UA_SOCKADDR_IN inaddr;
+    memset(&inaddr, 0, sizeof(inaddr));
+    inaddr.sin_family = AF_INET;
+    inaddr.sin_addr.s_addr = UA_htonl(INADDR_LOOPBACK);
+    inaddr.sin_port = 0;
+
+    UA_SOCKET lst = UA_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    UA_bind(lst, (UA_SOCKADDR *)&inaddr, sizeof(inaddr));
+    UA_listen(lst, 1);
+
+    UA_SOCKADDR_STORAGE addr;
+    memset(&addr, 0, sizeof(addr));
+    UA_SOCKLEN len = sizeof(addr);
+    UA_getsockname(lst, (UA_SOCKADDR*)&addr, &len);
+
+    fds[0] = UA_socket(AF_INET, SOCK_STREAM, 0);
+
+#if 0
+    OUL_LOG("addr.ss_family: %d", addr.ss_family);
+    OUL_LOG("addr.ss_data  : %s", addr.ss_data);
+#endif
+
+    OUL_LOG_DEBUG(ON, "Calling UA_connect(%d, %p, %d)", fds[0], (UA_SOCKADDR*)&addr, len);
+    int err = UA_connect(fds[0], (UA_SOCKADDR*)&addr, len);
+    if (err != 0)
+    {
+        OUL_LOG_ERROR("Failed to connect to self-pipe for event loop cancellation: %d", err);
+    }
+
+    fds[1] = UA_accept(lst, 0, 0);
+    UA_close(lst);
+
+    UA_EventLoopPOSIX_setNoSigPipe(fds[0]);
+    UA_EventLoopPOSIX_setReusable(fds[0]);
+    UA_EventLoopPOSIX_setNonBlocking(fds[0]);
+    UA_EventLoopPOSIX_setNoSigPipe(fds[1]);
+    UA_EventLoopPOSIX_setReusable(fds[1]);
+    UA_EventLoopPOSIX_setNonBlocking(fds[1]);
+    return err;
+}
+#elif defined(UA_ARCHITECTURE_WIN32) || defined(__APPLE__)
 int UA_EventLoopPOSIX_pipe(SOCKET fds[2]) {
     struct sockaddr_in inaddr;
     memset(&inaddr, 0, sizeof(inaddr));
