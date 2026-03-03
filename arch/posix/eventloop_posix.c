@@ -1099,7 +1099,6 @@ int UA_EventLoopPOSIX_pipe(UA_SOCKET fds[2]) {
     OUL_LOG("addr.ss_data  : %s", addr.ss_data);
 #endif
 
-    OUL_LOG_DEBUG(ON, "Calling UA_connect(%d, %p, %d)", fds[0], (UA_SOCKADDR*)&addr, len);
     int err = UA_connect(fds[0], (UA_SOCKADDR*)&addr, len);
     if (err != 0)
     {
