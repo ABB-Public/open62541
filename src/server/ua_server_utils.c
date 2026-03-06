@@ -263,79 +263,21 @@ getAllInterfaceChildNodeIds(UA_Server *server, const UA_NodeId *objectNode,
     return UA_STATUSCODE_GOOD;
 }
 
-/* For mulithreading: make a copy of the node, edit and replace.
- * For singlethreading: edit the original */
+/* Get the node, make the changes and release */
 UA_StatusCode
-UA_Server_editNode(UA_Server *server, UA_Session *session,
-                   const UA_NodeId *nodeId, UA_EditNodeCallback callback,
-                   void *data) {
-#ifndef UA_ENABLE_IMMUTABLE_NODES
-    /* Get the node and process it in-situ */
-    UA_LOCK(&server->serviceMutex);
-    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
-    if(!node) {
-        UA_UNLOCK(&server->serviceMutex);
+UA_Server_editNode(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
+                   UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+                   UA_BrowseDirection referenceDirections,
+                   UA_EditNodeCallback callback, void *data) {
+    UA_Node *node =
+        UA_NODESTORE_GET_EDIT_SELECTIVE(server, nodeId, attributeMask,
+                                        references, referenceDirections);
+    if(!node)
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
-    }
-    UA_StatusCode retval = callback(server, session, (UA_Node*)(uintptr_t)node, data);
+    UA_StatusCode retval = callback(server, session, node, data);
     UA_NODESTORE_RELEASE(server, node);
-    UA_UNLOCK(&server->serviceMutex);
     return retval;
-#else
-    UA_StatusCode retval;
-    do {
-        /* Get an editable copy of the node */
-        UA_Node *node;
-        retval = UA_NODESTORE_GETCOPY(server, nodeId, &node);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
-
-        /* Run the operation on the copy */
-        retval = callback(server, session, node, data);
-        if(retval != UA_STATUSCODE_GOOD) {
-            UA_NODESTORE_DELETE(server, node);
-            return retval;
-        }
-
-        /* Replace the node */
-        retval = UA_NODESTORE_REPLACE(server, node);
-    } while(retval != UA_STATUSCODE_GOOD);
-    return retval;
-#endif
 }
-
-UA_StatusCode
-UA_Server_processServiceOperations(UA_Server *server, UA_Session *session,
-                                   UA_ServiceOperation operationCallback,
-                                   const void *context, const size_t *requestOperations,
-                                   const UA_DataType *requestOperationsType,
-                                   size_t *responseOperations,
-                                   const UA_DataType *responseOperationsType) {
-    size_t ops = *requestOperations;
-    if(ops == 0)
-        return UA_STATUSCODE_BADNOTHINGTODO;
-
-    /* No padding after size_t */
-    void **respPos = (void**)((uintptr_t)responseOperations + sizeof(size_t));
-    *respPos = UA_Array_new(ops, responseOperationsType);
-    if(!(*respPos))
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-
-    *responseOperations = ops;
-    uintptr_t respOp = (uintptr_t)*respPos;
-    /* No padding after size_t */
-    uintptr_t reqOp = *(uintptr_t*)((uintptr_t)requestOperations + sizeof(size_t));
-    for(size_t i = 0; i < ops; i++) {
-        operationCallback(server, session, context, (void*)reqOp, (void*)respOp);
-        reqOp += requestOperationsType->memSize;
-        respOp += responseOperationsType->memSize;
-    }
-    return UA_STATUSCODE_GOOD;
-}
-
-/* A few global NodeId definitions */
-const UA_NodeId subtypeId = {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HASSUBTYPE}};
-const UA_NodeId hierarchicalReferences = {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HIERARCHICALREFERENCES}};
 
 /*********************************/
 /* Default attribute definitions */
@@ -424,3 +366,4 @@ const UA_ViewAttributes UA_ViewAttributes_default = {
     false,                  /* containsNoLoops */
     0                       /* eventNotifier */
 };
+
