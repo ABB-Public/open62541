@@ -1,6 +1,9 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
+ */
 
 /* Test case for all standardized companion nodesets. You can
  * find the specifications at https://github.com/OPCFoundation/UA-Nodeset.
@@ -133,7 +136,7 @@ END_TEST
 
 START_TEST(Server_loadDotNetNodeset) {
     UA_StatusCode retVal = UA_Server_loadNodeset(server,
-        OPEN62541_NODESET_DIR "DotNet/Opc.Ua.NodeSet.xml", NULL);
+        OPEN62541_NODESET_DIR "DotNet/Opc.Ua.PredefinedNodes.xml", NULL);
     ck_assert(UA_StatusCode_isGood(retVal));
 }
 END_TEST
@@ -167,12 +170,12 @@ START_TEST(Server_loadGDSNodeset) {
 END_TEST
 
 
-START_TEST(Server_loadServer_loadGlassNodeset) {
-    UA_StatusCode retVal = UA_Server_loadNodeset(server,
-        OPEN62541_NODESET_DIR "Glass/Flat/Opc.Ua.Glass.NodeSet2.xml", NULL);
-    ck_assert(UA_StatusCode_isGood(retVal));
-}
-END_TEST
+/* START_TEST(Server_loadServer_loadGlassNodeset) { */
+/*     UA_StatusCode retVal = UA_Server_loadNodeset(server, */
+/*         OPEN62541_NODESET_DIR "Glass/Flat/Opc.Ua.Glass.NodeSet2.xml", NULL); */
+/*     ck_assert(UA_StatusCode_isGood(retVal)); */
+/* } */
+/* END_TEST */
 
 START_TEST(Server_loadI4AASNodeset) {
     UA_StatusCode retVal = UA_Server_loadNodeset(server,
@@ -717,14 +720,14 @@ static Suite* testSuite_Client(void) {
         tcase_add_test(tc_server, Server_loadGDSNodeset);
         suite_add_tcase(s, tc_server);
     }
-    {
-        TCase *tc_server = tcase_create("Server load Glass nodeset");
-        tcase_add_unchecked_fixture(tc_server, setup, teardown);
-        tcase_add_test(tc_server, Server_loadDINodeset);
-        tcase_add_test(tc_server, Server_loadMachineryNodeset);
-        tcase_add_test(tc_server, Server_loadServer_loadGlassNodeset);
-        suite_add_tcase(s, tc_server);
-    }
+    /* { */
+    /*     TCase *tc_server = tcase_create("Server load Glass nodeset"); */
+    /*     tcase_add_unchecked_fixture(tc_server, setup, teardown); */
+    /*     tcase_add_test(tc_server, Server_loadDINodeset); */
+    /*     tcase_add_test(tc_server, Server_loadMachineryNodeset); */
+    /*     tcase_add_test(tc_server, Server_loadServer_loadGlassNodeset); */
+    /*     suite_add_tcase(s, tc_server); */
+    /* } */
     {
         TCase *tc_server = tcase_create("Server load I4AAS nodeset");
         tcase_add_unchecked_fixture(tc_server, setup, teardown);

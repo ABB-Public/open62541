@@ -187,7 +187,7 @@ checkSessionActive(UA_Server *server, void *data) {
     UA_GDSManager *gdsManager = &server->gdsManager;
     UA_GDSTransaction *transaction = &gdsManager->transaction;
     UA_Boolean removingCallback = false;
-    if(transaction->state != UA_GDSTRANSACIONSTATE_FRESH) {
+    if(transaction->state != UA_GDSTRANSACTIONSTATE_FRESH) {
         UA_Boolean foundSession = false;
         session_list_entry *session;
         LIST_FOREACH(session, &server->sessions, pointers) {
@@ -309,7 +309,7 @@ updateCertificate(UA_Server *server,
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
     UA_GDSManager *gdsManager = &server->gdsManager;
     UA_GDSTransaction *transaction = &gdsManager->transaction;
-    if(transaction->state == UA_GDSTRANSACIONSTATE_FRESH) {
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH) {
         retval = UA_GDSTransaction_init(transaction, server, *sessionId);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
@@ -446,7 +446,7 @@ addCertificate(UA_Server *server,
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
 
     UA_GDSManager *gdsManager = &server->gdsManager;
-    if(gdsManager->transaction.state != UA_GDSTRANSACIONSTATE_FRESH)
+    if(gdsManager->transaction.state != UA_GDSTRANSACTIONSTATE_FRESH)
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
 
     /* CA certificates cannot be added using this method because it does not support adding CRLs */
@@ -506,7 +506,7 @@ removeCertificate(UA_Server *server,
 
     UA_GDSManager *gdsManager = &server->gdsManager;
     UA_GDSTransaction *transaction = &gdsManager->transaction;
-    if(transaction->state != UA_GDSTRANSACIONSTATE_FRESH)
+    if(transaction->state != UA_GDSTRANSACTIONSTATE_FRESH)
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
 
     /* When a certificate is removed, a transaction is created which is then executed directly.
@@ -630,7 +630,7 @@ openTrustList(UA_Server *server,
     UA_GDSManager *gdsManager = &server->gdsManager;
     UA_GDSTransaction *transaction = &gdsManager->transaction;
     /* Cannot be opened when a transaction is running */
-    if(transaction->state == UA_GDSTRANSACIONSTATE_PENDING)
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_PENDING)
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
 
     UA_FileInfo *fileInfo = getFileInfo(gdsManager, certGroup->certificateGroupId);
@@ -720,7 +720,7 @@ openTrustListWithMask(UA_Server *server,
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     UA_GDSManager *gdsManager = &server->gdsManager;
-    if(gdsManager->transaction.state == UA_GDSTRANSACIONSTATE_PENDING)
+    if(gdsManager->transaction.state == UA_GDSTRANSACTIONSTATE_PENDING)
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
 
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
@@ -813,9 +813,9 @@ readTrustList(UA_Server *server,
 
     UA_ByteString readBuffer = UA_BYTESTRING_NULL;
     if(length > 0) {
-        readBuffer.length = length;
+        readBuffer.length = (size_t)length;
         readBuffer.data = fileContext->file.data+fileContext->currentPos;
-        fileContext->currentPos += length;
+        fileContext->currentPos += (UA_UInt64)length;
     }
 
     UA_Variant_setScalarCopy(output, &readBuffer, &UA_TYPES[UA_TYPES_BYTESTRING]);
@@ -1158,7 +1158,7 @@ applyChangesToServer(UA_Server *server) {
             if(!UA_NodeId_equal(&sp->certificateTypeId, &certTypeId))
                 continue;
 
-            retval = sp->updateCertificateAndPrivateKey(sp, certificate, privateKey);
+            retval = sp->updateCertificate(sp, certificate, privateKey);
             if(retval != UA_STATUSCODE_GOOD)
                 goto cleanup;
 
@@ -1197,7 +1197,7 @@ applyChanges(UA_Server *server,
     UA_LOCK_ASSERT(&server->serviceMutex);
     UA_GDSManager *gdsManager = &server->gdsManager;
     UA_GDSTransaction *transaction = &gdsManager->transaction;
-    if(transaction->state == UA_GDSTRANSACIONSTATE_FRESH)
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH)
         return UA_STATUSCODE_BADNOTHINGTODO;
 
     if(!UA_NodeId_equal(&transaction->sessionId, sessionId))
@@ -1300,7 +1300,9 @@ openFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1329,7 +1331,9 @@ readFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1358,7 +1362,9 @@ writeFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1387,7 +1393,9 @@ closeFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1416,7 +1424,9 @@ getPositionFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1445,7 +1455,9 @@ setPositionFile(UA_Server *server,
          size_t outputSize, UA_Variant *output) {
 
     const UA_Node *object = UA_NODESTORE_GET(server, objectId);
-    const UA_Node *objectType = getNodeType(server, &object->head);
+    const UA_Node *objectType =
+        getNodeType(server, &object->head, ~(UA_UInt32)0,
+                    UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
 
     UA_NodeId trustListType = UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE);
     UA_StatusCode retval = UA_STATUSCODE_BADNOTIMPLEMENTED;
@@ -1702,56 +1714,42 @@ initNS0PushManagement(UA_Server *server) {
 
     /* Set method callbacks */
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_UPDATECERTIFICATE), updateCertificateAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATIONTYPE_UPDATECERTIFICATE), updateCertificateAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST), createSigningRequestAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATIONTYPE_CREATESIGNINGREQUEST), createSigningRequestAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST), getRejectedListAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATIONTYPE_GETREJECTEDLIST), getRejectedListAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES), applyChangesAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATIONTYPE_APPLYCHANGES), applyChangesAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE), addCertificateAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_ADDCERTIFICATE), addCertificateAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE_ADDCERTIFICATE), addCertificateAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE), removeCertificateAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_REMOVECERTIFICATE), removeCertificateAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE_REMOVECERTIFICATE), removeCertificateAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPENWITHMASKS), openTrustListWithMaskAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_OPENWITHMASKS), openTrustListWithMaskAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE_OPENWITHMASKS), openTrustListWithMaskAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSEANDUPDATE), closeAndUpdateTrustListAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_CLOSEANDUPDATE), closeAndUpdateTrustListAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_TRUSTLISTTYPE_CLOSEANDUPDATE), closeAndUpdateTrustListAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPEN), openFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_OPEN), openFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_OPEN), openFileAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_READ), readFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_READ), readFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_READ), readFileAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_WRITE), writeFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_WRITE), writeFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_WRITE), writeFileAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE), closeFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_CLOSE), closeFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_CLOSE), closeFileAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_GETPOSITION), getPositionFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_GETPOSITION), getPositionFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_GETPOSITION), getPositionFileAction);
 
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_SETPOSITION), setPositionFileAction);
     retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_SETPOSITION), setPositionFileAction);
-    retval |= setMethodNode_callback(server, UA_NODEID_NUMERIC(0, UA_NS0ID_FILETYPE_SETPOSITION), setPositionFileAction);
 
     return retval;
 }

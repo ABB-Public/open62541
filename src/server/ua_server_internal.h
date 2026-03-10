@@ -12,7 +12,7 @@
  *    Copyright 2017 (c) Julian Grothoff
  *    Copyright 2019 (c) Kalycito Infotech Private Limited
  *    Copyright 2019 (c) HMS Industrial Networks AB (Author: Jonas Green)
- *    Copyright 2021 (c) Fraunhofer IOSB (Author: Andreas Ebner)
+ *    Copyright 2021-2025 (c) Fraunhofer IOSB (Author: Andreas Ebner)
  *    Copyright 2022 (c) Christian von Arnim, ISW University of Stuttgart (for VDW and umati)
  */
 
@@ -57,8 +57,8 @@ typedef struct {
 /********************/
 
 typedef enum {
-    UA_GDSTRANSACIONSTATE_FRESH,
-    UA_GDSTRANSACIONSTATE_PENDING,
+    UA_GDSTRANSACTIONSTATE_FRESH,
+    UA_GDSTRANSACTIONSTATE_PENDING,
 } UA_GDSTransactionState;
 
 typedef struct {
@@ -207,6 +207,12 @@ struct UA_Server {
 
     UA_AsyncManager asyncManager;
 
+    /* Custom datatypes that are internally created and cleaned up at the end of
+     * the server lifecycle. The next->pointer points to the server config. So
+     * we can use customTypes_internal as the universal entry. */
+    UA_DataTypeArray *customTypes_internal;
+    size_t customTypes_internalSize;
+
     /* Session Management */
     LIST_HEAD(session_list, session_list_entry) sessions;
     UA_UInt32 sessionCount;
@@ -245,7 +251,6 @@ struct UA_Server {
 
 # ifdef UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS
     LIST_HEAD(, UA_ConditionSource) conditionSources;
-    UA_NodeId refreshEvents[2];
 # endif
 #endif
 
@@ -260,6 +265,11 @@ struct UA_Server {
     /* GDS Manager for certificate management */
     UA_GDSManager gdsManager;
 };
+
+/* In case the configuration was updated. Make the ->next pointer in the
+ * internal customTypes point into the configuration. */
+const UA_DataTypeArray *
+serverCustomTypes(UA_Server *server);
 
 /***********************/
 /* References Handling */
@@ -284,6 +294,15 @@ ZIP_FUNCTIONS(UA_ReferenceNameTree, UA_ReferenceTargetTreeElem, nameTreeEntry,
 /* SecureChannel Handling */
 /**************************/
 
+/* Session and channel can be NULL, only used for logging.
+ * Ad can be NULL, then the ApplicationUri is not checked. */
+UA_StatusCode
+validateCertificate(UA_Server *server, UA_CertificateGroup *cg,
+                    UA_SecureChannel *channel, UA_Session *session,
+                    const char *logPrefix,
+                    const UA_ApplicationDescription *ad,
+                    const UA_ByteString certificate);
+
 void
 serverNetworkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
                       void *application, void **connectionContext,
@@ -295,11 +314,29 @@ UA_StatusCode
 sendServiceFault(UA_Server *server, UA_SecureChannel *channel, UA_UInt32 requestId,
                  UA_UInt32 requestHandle, UA_StatusCode statusCode);
 
+/* Validate the remote certificate received in the OPN message and create the
+ * SecureChannel context. This is needed before OPN is decrypted. */
+UA_StatusCode
+processOPN_AsymHeader(void *application, UA_SecureChannel *channel,
+                      const UA_AsymmetricAlgorithmSecurityHeader *asymHeader);
+
 /* Gets the a pointer to the context of a security policy supported by the
  * server matched by the security policy uri. */
 UA_SecurityPolicy *
 getSecurityPolicyByUri(const UA_Server *server,
                        const UA_String *securityPolicyUri);
+
+/* Get only the #None or #Basic256Sha256 postfix of a SecurityPolicyUri */
+UA_String
+securityPolicyUriPostfix(const UA_String uri);
+
+UA_SecurityPolicy *
+getSecurityPolicyByPostfix(const UA_Server *server,
+                           const UA_String uriPostfix);
+
+void
+notifySecureChannel(UA_Server *server, UA_SecureChannel *channel,
+                    UA_ApplicationNotificationType type);
 
 /********************/
 /* Session Handling */
@@ -318,19 +355,16 @@ getBoundSession(UA_Server *server, const UA_SecureChannel *channel,
                 const UA_NodeId *token, UA_Session **session);
 
 UA_StatusCode
-UA_Server_createSession(UA_Server *server, UA_SecureChannel *channel,
-                        const UA_CreateSessionRequest *request, UA_Session **session);
+UA_Session_create(UA_Server *server, UA_SecureChannel *channel,
+                  const UA_CreateSessionRequest *request,
+                  UA_Session **session);
 
 void
-UA_Server_removeSession(UA_Server *server, session_list_entry *sentry,
-                        UA_ShutdownReason shutdownReason);
-
-UA_StatusCode
-UA_Server_removeSessionByToken(UA_Server *server, const UA_NodeId *token,
-                               UA_ShutdownReason shutdownReason);
+UA_Session_remove(UA_Server *server, UA_Session *session,
+                  UA_ShutdownReason shutdownReason);
 
 void
-UA_Server_cleanupSessions(UA_Server *server, UA_DateTime nowMonotonic);
+cleanupSessions(UA_Server *server, UA_DateTime nowMonotonic);
 
 UA_Session *
 getSessionByToken(UA_Server *server, const UA_NodeId *token);
@@ -348,10 +382,19 @@ getSessionById(UA_Server *server, const UA_NodeId *sessionId);
 typedef UA_StatusCode (*UA_EditNodeCallback)(UA_Server*, UA_Session*,
                                              UA_Node *node, void*);
 UA_StatusCode
-UA_Server_editNode(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
-                   UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
-                   UA_BrowseDirection referenceDirections,
-                   UA_EditNodeCallback callback, void *data);
+editNode(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
+         UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+         UA_BrowseDirection referenceDirections,
+         UA_EditNodeCallback callback, void *data);
+
+/* Search for a child with a given browseNamee. Returns the first match. Does
+ * not touch outChildNodeId if no child is found. */
+UA_StatusCode
+findChildByBrowsename(UA_Server *server, UA_Session *session,
+                      const UA_NodeId parentId, UA_NodeClass nodeClassMask,
+                      const UA_Byte refType, const UA_NodeId refTypeId,
+                      const UA_QualifiedName *browseName,
+                      UA_NodeId *outChildNodeId);
 
 /*********************/
 /* Utility Functions */
@@ -390,15 +433,17 @@ UA_StatusCode
 referenceTypeIndices(UA_Server *server, const UA_NodeId *refType,
                      UA_ReferenceTypeSet *indices, UA_Boolean includeSubtypes);
 
-/* Returns the recursive type and interface hierarchy of the node */
+/* Returns the recursive type hierarchy for an Object/ObjectType or
+ * Variable/VariableType. Does not return interfaces. */
 UA_StatusCode
-getParentTypeAndInterfaceHierarchy(UA_Server *server, const UA_NodeId *typeNode,
-                                   UA_NodeId **typeHierarchy, size_t *typeHierarchySize);
+getTypeAndInterfaceHierarchy(UA_Server *server, const UA_NodeId *leafNode,
+                             UA_Boolean includeLeaf, UA_NodeId **typeHierarchy,
+                             size_t *typeHierarchySize);
 
 /* Returns the recursive interface hierarchy of the node */
 UA_StatusCode
-getAllInterfaceChildNodeIds(UA_Server *server, const UA_NodeId *objectNode, const UA_NodeId *objectTypeNode,
-                                   UA_NodeId **interfaceChildNodes, size_t *interfaceChildNodesSize);
+getAllInterfaces(UA_Server *server, const UA_NodeId *objectNode,
+                 UA_NodeId **interfaceNodes, size_t *interfaceNodesSize);
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS
 
@@ -417,10 +462,14 @@ isConditionOrBranch(UA_Server *server,
 
 #endif /* UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS */
 
-/* Returns the type node from the node on the stack top. The type node is pushed
- * on the stack and returned. */
+/* Returns the first "HasTypeDefinition" or "HasSubtype" reference to the
+ * (parent) type. Some types have very many instances. If the type is created
+ * ad-hoc by the Nodestore, the attributeMask and reference characterization can
+ * be used to return only relevant attributes/references. */
 const UA_Node *
-getNodeType(UA_Server *server, const UA_NodeHead *nodeHead);
+getNodeType(UA_Server *server, const UA_NodeHead *nodeHead,
+            UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+            UA_BrowseDirection referenceDirections);
 
 /* Returns whether the response is done (async call or not) */
 UA_Boolean
@@ -548,13 +597,17 @@ readObjectProperty(UA_Server *server, const UA_NodeId objectId,
 UA_BrowsePathResult
 translateBrowsePathToNodeIds(UA_Server *server, const UA_BrowsePath *browsePath);
 
-/* Returns a configured SecurityPolicy with encryption. Use Basic256Sha256 if
- * available. Otherwise use any encrypted SecurityPolicy. */
+/* Returns the "best" configured SecurityPolicy with encryption. The _NONE type
+ * is the wildcard for any SecurityPolicy. */
 UA_SecurityPolicy *
-getDefaultEncryptedSecurityPolicy(UA_Server *server);
+getDefaultEncryptedSecurityPolicy(UA_Server *server,
+                                  UA_SecurityPolicyType type);
 
+/* If the channel is non-NULL, then only compatible endpoints are returned.
+ * Depending on ECC/RSA for the SecurityPolicy of the existing channel. */
 UA_StatusCode
-setCurrentEndPointsArray(UA_Server *server, const UA_String endpointURL,
+setCurrentEndPointsArray(UA_Server *server, UA_SecureChannel *channel,
+                         const UA_String endpointUrl,
                          UA_String *profileUris, size_t profileUrisSize,
                          UA_EndpointDescription **arr, size_t *arrSize);
 
@@ -598,9 +651,6 @@ UA_ServerComponent * UA_BinaryProtocolManager_new(UA_Server *server);
 #ifdef UA_ENABLE_PUBSUB
 UA_ServerComponent * UA_PubSubManager_new(UA_Server *server);
 #endif
-
-UA_String
-securityPolicyUriPostfix(const UA_String uri);
 
 /***********/
 /* RefTree */
@@ -649,6 +699,15 @@ RefTree_contains(RefTree *rt, const UA_ExpandedNodeId *target);
 
 UA_Boolean
 RefTree_containsNodeId(RefTree *rt, const UA_NodeId *target);
+
+/* Browse recursive starting from all nodes already in the rt. Add matching
+ * targets to the rt and continue. Does not clean up the rt in case of an
+ * error. */
+UA_StatusCode
+browseRecursiveRefTree(UA_Server *server, RefTree *rt,
+                       UA_BrowseDirection browseDirection,
+                       const UA_ReferenceTypeSet *refTypes,
+                       UA_UInt32 nodeClassMask);
 
 /***************************************/
 /* Check Information Model Consistency */
@@ -770,6 +829,9 @@ addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId);
 
 UA_StatusCode initNS0(UA_Server *server);
 
+/* Connect data sources to existing NS0 nodes */
+UA_StatusCode initNS0_dataSources(UA_Server *server);
+
 #ifdef UA_ENABLE_GDS_PUSHMANAGEMENT
 UA_StatusCode
 initNS0PushManagement(UA_Server *server);
@@ -885,14 +947,6 @@ UA_Session_getNodeDisplayName(const UA_Session *session,
 UA_LocalizedText
 UA_Session_getNodeDescription(const UA_Session *session,
                               const UA_NodeHead *head);
-
-UA_StatusCode
-UA_Node_insertOrUpdateDisplayName(UA_NodeHead *head,
-                                  const UA_LocalizedText *value);
-
-UA_StatusCode
-UA_Node_insertOrUpdateDescription(UA_NodeHead *head,
-                                  const UA_LocalizedText *value);
 
 _UA_END_DECLS
 

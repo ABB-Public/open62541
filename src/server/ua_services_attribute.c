@@ -463,33 +463,40 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
 #ifdef UA_ENABLE_TYPEDESCRIPTION
         /* Find the DataType */
         const UA_DataType *type =
-            UA_findDataTypeWithCustom(&node->head.nodeId, server->config.customDataTypes);
+            UA_findDataTypeWithCustom(&node->head.nodeId, serverCustomTypes(server));
         if(!type) {
             retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
             break;
         }
 
-        /* Create the StructureDefinition */
-        if(UA_DATATYPEKIND_STRUCTURE == type->typeKind ||
-           UA_DATATYPEKIND_OPTSTRUCT == type->typeKind ||
-           UA_DATATYPEKIND_UNION == type->typeKind) {
-            UA_StructureDefinition *def = UA_StructureDefinition_new();
-            if(!def) {
-                retval = UA_STATUSCODE_BADOUTOFMEMORY;
-                break;
-            }
-
-            retval = UA_DataType_toStructureDefinition(type, def);
-            if(UA_STATUSCODE_GOOD != retval) {
-                UA_free(def);
-                break;
-            }
-
-            UA_Variant_setScalar(&v->value, def, &UA_TYPES[UA_TYPES_STRUCTUREDEFINITION]);
+        UA_ExtensionObject typeDescr;
+        retval = UA_DataType_toDescription(type, &typeDescr);
+        if(UA_STATUSCODE_GOOD != retval)
             break;
+
+        if(typeDescr.content.decoded.type == &UA_TYPES[UA_TYPES_STRUCTUREDESCRIPTION]) {
+            UA_StructureDescription *sd = (UA_StructureDescription*)
+                typeDescr.content.decoded.data;
+            UA_NodeId_clear(&sd->dataTypeId);
+            UA_QualifiedName_clear(&sd->name);
+            memmove(sd, &sd->structureDefinition, sizeof(UA_StructureDefinition));
+            UA_Variant_setScalar(&v->value, sd, &UA_TYPES[UA_TYPES_STRUCTUREDEFINITION]);
+        } else if(typeDescr.content.decoded.type == &UA_TYPES[UA_TYPES_ENUMDESCRIPTION] && type->membersSize > 0) {
+            /* UaExpert doesn't fall back to the EnumStrings property if the DataTypeDefinition attribute
+               can be read but has no fields. This breaks its method call dialog for enum parameters. */
+
+            UA_EnumDescription *ed = (UA_EnumDescription*)
+                typeDescr.content.decoded.data;
+            UA_NodeId_clear(&ed->dataTypeId);
+            UA_QualifiedName_clear(&ed->name);
+            memmove(ed, &ed->enumDefinition, sizeof(UA_EnumDefinition));
+            UA_Variant_setScalar(&v->value, ed, &UA_TYPES[UA_TYPES_ENUMDEFINITION]);
+        } else {
+            retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
         }
-#endif
+#else
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
+#endif
         break;
     }
 #ifdef UA_ENABLE_ROLEPERMISSONS
@@ -1507,6 +1514,15 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
     if(retval == UA_STATUSCODE_GOOD &&
        node->head.nodeClass == UA_NODECLASS_VARIABLE &&
        server->config.historyDatabase.setValue) {
+
+        /* Some famous clients require the source timestap to properly receive
+         * historical data. If missing we insert the source timestamp here. */
+        if(!adjustedValue.hasSourceTimestamp) {
+            adjustedValue.hasSourceTimestamp = true;
+            adjustedValue.sourceTimestamp = UA_DateTime_now();
+        }
+
+        /* Forward to the callback */
         server->config.historyDatabase.
             setValue(server, server->config.historyDatabase.context,
                      &session->sessionId, session->context,
@@ -1573,12 +1589,14 @@ writeIsAbstract(UA_Node *node, UA_Boolean value) {
         break;                                              \
     }
 
-#define GET_NODETYPE                                \
-    type = (const UA_VariableTypeNode*)             \
-        getNodeType(server, &node->head);           \
-    if(!type) {                                     \
-        retval = UA_STATUSCODE_BADTYPEMISMATCH;     \
-        break;                                      \
+#define GET_NODETYPE                                    \
+    type = (const UA_VariableTypeNode*)                 \
+        getNodeType(server, &node->head, ~(UA_UInt32)0, \
+                    UA_REFERENCETYPESET_NONE,           \
+                    UA_BROWSEDIRECTION_INVALID);        \
+    if(!type) {                                         \
+        retval = UA_STATUSCODE_BADTYPEMISMATCH;         \
+        break;                                          \
     }
 
 /* Update a localized text. Don't touch the target if copying fails
@@ -1651,13 +1669,13 @@ copyAttributeIntoNode(UA_Server *server, UA_Session *session,
     case UA_ATTRIBUTEID_DISPLAYNAME:
         CHECK_USERWRITEMASK(UA_WRITEMASK_DISPLAYNAME);
         CHECK_DATATYPE_SCALAR(LOCALIZEDTEXT);
-        retval = UA_Node_insertOrUpdateDisplayName(&node->head,
+        retval = UA_Node_insertOrUpdateDisplayName(node,
                                                    (const UA_LocalizedText *)value);
         break;
     case UA_ATTRIBUTEID_DESCRIPTION:
         CHECK_USERWRITEMASK(UA_WRITEMASK_DESCRIPTION);
         CHECK_DATATYPE_SCALAR(LOCALIZEDTEXT);
-        retval = UA_Node_insertOrUpdateDescription(&node->head,
+        retval = UA_Node_insertOrUpdateDescription(node,
                                                    (const UA_LocalizedText *)value);
         break;
     case UA_ATTRIBUTEID_WRITEMASK:
@@ -1798,10 +1816,10 @@ UA_Boolean
 Operation_Write(UA_Server *server, UA_Session *session,
                 const UA_WriteValue *wv, UA_StatusCode *result) {
     UA_assert(session != NULL);
-    *result = UA_Server_editNode(server, session, &wv->nodeId, wv->attributeId,
-                                 UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
-                                 (UA_EditNodeCallback)copyAttributeIntoNode,
-                                 (void*)(uintptr_t)wv);
+    *result = editNode(server, session, &wv->nodeId, wv->attributeId,
+                       UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
+                       (UA_EditNodeCallback)copyAttributeIntoNode,
+                       (void*)(uintptr_t)wv);
     return (*result != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY);
 }
 
