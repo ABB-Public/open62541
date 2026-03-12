@@ -6,7 +6,7 @@ if(MSVC)
         $<$<CONFIG:Release>:/MD>
     )
 else()
-    add_compile_options(-Wno-unused-variable -Wno-unused-function)
+    add_compile_options(-Wno-unused-variable -Wno-unused-function -Wno-shadow)
     add_compile_options(-Wno-gnu-zero-variadic-macro-arguments) # silence warning for the check library
 endif()
 
@@ -78,6 +78,7 @@ endif()
 
 # Use additional plugins for testing
 set(test_plugin_sources
+    ${PROJECT_SOURCE_DIR}/tests/testing-plugins/test_helpers.c
     ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_clock.c
     ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_policy.c
     ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_networklayers.c)
@@ -145,7 +146,15 @@ macro(add_test_no_valgrind TEST_NAME)
     endif()
 endmacro()
 
-add_custom_target(test-verbose COMMAND ${CMAKE_CTEST_COMMAND} --verbose)
+# On multi-config generators (Visual Studio) CTest requires -C <config> so that
+# generator expressions in test commands (and non-standard executables like
+# Python) are resolved correctly.  On single-config generators (Makefiles,
+# Ninja) no -C argument is needed.
+if(CMAKE_CONFIGURATION_TYPES)
+    add_custom_target(test-verbose COMMAND ${CMAKE_CTEST_COMMAND} -C $<CONFIG> --verbose)
+else()
+    add_custom_target(test-verbose COMMAND ${CMAKE_CTEST_COMMAND} --verbose)
+endif()
 
 # the unit test are built directly on the open62541 object files. so they can
 # access symbols that are hidden/not exported to the shared library
@@ -177,6 +186,9 @@ if(UA_ENABLE_JSON_ENCODING)
     ua_add_test(check_cj5.c)
     ua_add_test(check_types_builtin_json.c)
 
+    configure_file(${CMAKE_SOURCE_DIR}/tests/server/server_json_config.json5 ${CMAKE_BINARY_DIR}/tests/server_json_config.json5 COPYONLY)
+    ua_add_test(server/check_json_config.c)
+
     if(UA_ENABLE_PUBSUB)
         ua_add_test(pubsub/check_pubsub_encoding_json.c)
         ua_add_test(pubsub/check_pubsub_publish_json.c)
@@ -190,12 +202,10 @@ endif()
 
 ua_add_test(check_types_memory.c)
 ua_add_test(check_types_range.c)
+ua_add_test(check_types_parse.c)
 
-if(UA_ENABLE_PARSING)
-    ua_add_test(check_types_parse.c)
-    if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
-        ua_add_test(server/check_eventfilter_parser.c)
-    endif()
+if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
+    ua_add_test(server/check_eventfilter_parser.c)
 endif()
 
 ua_add_test(check_types_custom.c)
@@ -376,6 +386,7 @@ endif()
 if(UA_ENABLE_ENCRYPTION)
     ua_add_test(client/check_client_encryption.c)
     ua_add_test(encryption/check_crl_validation.c)
+    ua_add_test(encryption/check_ca_chain.c)
 
     if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_MBEDTLS)
         ua_add_test(client/check_client_authentication.c)

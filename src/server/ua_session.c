@@ -14,8 +14,6 @@
 #include "ua_subscription.h"
 #endif
 
-#define UA_SESSION_NONCELENTH 32
-
 void UA_Session_init(UA_Session *session) {
     memset(session, 0, sizeof(UA_Session));
     session->availableContinuationPoints = UA_MAXCONTINUATIONPOINTS;
@@ -41,8 +39,9 @@ void UA_Session_clear(UA_Session *session, UA_Server* server) {
     deleteNode(server, session->sessionId, true);
 #endif
 
-    UA_Session_detachFromSecureChannel(session);
+    UA_Session_detachFromSecureChannel(server, session);
     UA_ApplicationDescription_clear(&session->clientDescription);
+    UA_ByteString_clear(&session->clientCertificate);
     UA_NodeId_clear(&session->authenticationToken);
     UA_String_clear(&session->clientUserIdOfSession);
     UA_NodeId_clear(&session->sessionId);
@@ -56,8 +55,7 @@ void UA_Session_clear(UA_Session *session, UA_Server* server) {
     session->continuationPoints = NULL;
     session->availableContinuationPoints = UA_MAXCONTINUATIONPOINTS;
 
-    UA_KeyValueMap_delete(session->attributes);
-    session->attributes = NULL;
+    UA_KeyValueMap_clear(&session->attributes);
 
     UA_Array_delete(session->localeIds, session->localeIdsSize,
                     &UA_TYPES[UA_TYPES_STRING]);
@@ -68,12 +66,20 @@ void UA_Session_clear(UA_Session *session, UA_Server* server) {
     UA_SessionDiagnosticsDataType_clear(&session->diagnostics);
     UA_SessionSecurityDiagnosticsDataType_clear(&session->securityDiagnostics);
 #endif
+
+    if(session->sessionSp && session->sessionSpContext) {
+        session->sessionSp->
+            deleteChannelContext(session->sessionSp, session->sessionSpContext);
+        session->sessionSp = NULL;
+        session->sessionSpContext = NULL;
+    }
 }
 
 void
-UA_Session_attachToSecureChannel(UA_Session *session, UA_SecureChannel *channel) {
+UA_Session_attachToSecureChannel(UA_Server *server, UA_Session *session,
+                                 UA_SecureChannel *channel) {
     /* Ensure the Session is not attached to another SecureChannel */
-    UA_Session_detachFromSecureChannel(session);
+    UA_Session_detachFromSecureChannel(server, session);
 
     /* Add to singly-linked list */
     session->next = channel->sessions;
@@ -84,7 +90,7 @@ UA_Session_attachToSecureChannel(UA_Session *session, UA_SecureChannel *channel)
 }
 
 void
-UA_Session_detachFromSecureChannel(UA_Session *session) {
+UA_Session_detachFromSecureChannel(UA_Server *server, UA_Session *session) {
     /* Clean up the response queue. Their RequestId is bound to the
      * SecureChannel so they cannot be reused. */
 #ifdef UA_ENABLE_SUBSCRIPTIONS
@@ -111,6 +117,10 @@ UA_Session_detachFromSecureChannel(UA_Session *session) {
 
     /* Reset the backpointer */
     session->channel = NULL;
+
+    /* Notify the application */
+    notifySession(server, session,
+                  UA_APPLICATIONNOTIFICATIONTYPE_SESSION_DEACTIVATED);
 }
 
 UA_StatusCode
@@ -119,17 +129,30 @@ UA_Session_generateNonce(UA_Session *session) {
     if(!channel || !channel->securityPolicy)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    /* Is the length of the previous nonce correct? */
-    if(session->serverNonce.length != UA_SESSION_NONCELENTH) {
-        UA_ByteString_clear(&session->serverNonce);
-        UA_StatusCode retval =
-            UA_ByteString_allocBuffer(&session->serverNonce, UA_SESSION_NONCELENTH);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
+    /* The nonce needs to be between 32 and 128 byte.
+     * The #Nonce SecurityPolicy might not do that. */
+    UA_SecurityPolicy *sp = channel->securityPolicy;
+    void *spC = channel->channelContext;
+    if(session->sessionSp && session->sessionSpContext) {
+        sp = session->sessionSp;
+        spC = session->sessionSpContext;
     }
 
-    return channel->securityPolicy->symmetricModule.
-        generateNonce(channel->securityPolicy->policyContext, &session->serverNonce);
+    /* The nonce is at least 32 byte (force the #None SecurityPolicy) */
+    size_t nonceLength = sp->nonceLength;
+    if(nonceLength < 32)
+        nonceLength = 32;
+
+    /* Is the length of the previous nonce correct? */
+    if(session->serverNonce.length != nonceLength) {
+        UA_ByteString_clear(&session->serverNonce);
+        UA_StatusCode res =
+            UA_ByteString_allocBuffer(&session->serverNonce, nonceLength);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+    }
+
+    return sp->generateNonce(sp, spC, &session->serverNonce);
 }
 
 void
@@ -248,17 +271,14 @@ UA_Session_queuePublishReq(UA_Session *session, UA_PublishResponseEntry* entry,
 UA_StatusCode
 UA_Server_closeSession(UA_Server *server, const UA_NodeId *sessionId) {
     lockServer(server);
-    session_list_entry *entry;
-    UA_StatusCode res = UA_STATUSCODE_BADSESSIONIDINVALID;
-    LIST_FOREACH(entry, &server->sessions, pointers) {
-        if(UA_NodeId_equal(&entry->session.sessionId, sessionId)) {
-            UA_Server_removeSession(server, entry, UA_SHUTDOWNREASON_CLOSE);
-            res = UA_STATUSCODE_GOOD;
-            break;
-        }
+    UA_Session *session = getSessionById(server, sessionId);
+    if(!session) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADSESSIONIDINVALID;
     }
+    UA_Session_remove(server, session, UA_SHUTDOWNREASON_CLOSE);
     unlockServer(server);
-    return res;
+    return UA_STATUSCODE_GOOD;
 }
 
 /* Session Attributes */
@@ -287,13 +307,9 @@ UA_Server_setSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         return UA_STATUSCODE_BADNOTWRITABLE;
     lockServer(server);
     UA_Session *session = getSessionById(server, sessionId);
-    if(!session) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADSESSIONIDINVALID;
-    }
-    if(!session->attributes)
-        session->attributes = UA_KeyValueMap_new();
-    UA_StatusCode res = UA_KeyValueMap_set(session->attributes, key, value);
+    UA_StatusCode res = UA_STATUSCODE_BADSESSIONIDINVALID;
+    if(session)
+        res = UA_KeyValueMap_set(&session->attributes, key, value);
     unlockServer(server);
     return res;
 }
@@ -309,9 +325,7 @@ UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         unlockServer(server);
         return UA_STATUSCODE_BADSESSIONIDINVALID;
     }
-    UA_StatusCode res = UA_STATUSCODE_BADNOTFOUND;
-    if(session->attributes)
-        res = UA_KeyValueMap_remove(session->attributes, key);
+    UA_StatusCode res = UA_KeyValueMap_remove(&session->attributes, key);
     unlockServer(server);
     return res;
 }
@@ -352,7 +366,7 @@ getSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         attr = &localAttr;
     } else {
         /* Get from the actual key-value list */
-        attr = UA_KeyValueMap_get(session->attributes, key);
+        attr = UA_KeyValueMap_get(&session->attributes, key);
         if(!attr)
             return UA_STATUSCODE_BADNOTFOUND;
     }

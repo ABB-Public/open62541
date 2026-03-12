@@ -9,6 +9,7 @@
 
 #include "ua_discovery.h"
 #include "ua_server_internal.h"
+#include <stdlib.h>
 #include <libmdnsd/mdnsd.h>
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
 
@@ -525,7 +526,7 @@ mdns_create_txt(UA_DiscoveryManager *dm, const char *fullServiceDomain, const ch
     xht_free(h);
     mdnsd_set_raw(mdnsPrivateData.mdnsDaemon, r, (char *) packet,
                   (unsigned short) txtRecordLength);
-    UA_free(packet);
+    MDNSD_free(packet);
 }
 
 static mdns_record_t *

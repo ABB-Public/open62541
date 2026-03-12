@@ -17,6 +17,7 @@
  *    Copyright 2018 (c) Fabian Arndt, Root-Core
  *    Copyright 2019 (c) HMS Industrial Networks AB (Author: Jonas Green)
  *    Copyright 2020-2021 (c) Christian von Arnim, ISW University of Stuttgart (for VDW and umati)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include "ua_server_internal.h"
@@ -309,7 +310,12 @@ UA_Subscription_delete(UA_Server *server, UA_Subscription *sub) {
         LIST_REMOVE(sub, serverListEntry);
         UA_assert(server->subscriptionsSize > 0);
         server->subscriptionsSize--;
-        server->serverDiagnosticsSummary.currentSubscriptionCount--;
+        /* Only decrement the counter if this subscription was not transferred.
+         * Transferred subscriptions are replaced by a new subscription object
+         * that continues to exist, so the diagnostic counter should not change. */
+        if(!sub->wasTransferred) {
+            server->serverDiagnosticsSummary.currentSubscriptionCount--;
+        }
     }
 
     /* Delete monitored Items */
@@ -1173,7 +1179,7 @@ createEventOverflowNotification(UA_Server *server, UA_Subscription *sub,
 
     /* Update the diagnostics statistics */
 #ifdef UA_ENABLE_DIAGNOSTICS
-    sub->eventQueueOverFlowCount++;
+    sub->eventQueueOverflowCount++;
 #endif
 
     return UA_STATUSCODE_GOOD;
@@ -1269,7 +1275,7 @@ removeMonitoredItemBackPointer(UA_Server *server, UA_Session *session,
 }
 
 void
-UA_Server_registerMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
+UA_MonitoredItem_register(UA_Server *server, UA_MonitoredItem *mon) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
     if(mon->registered)
@@ -1590,9 +1596,9 @@ UA_MonitoredItem_registerSampling(UA_Server *server, UA_MonitoredItem *mon) {
     if(mon->itemToMonitor.attributeId == UA_ATTRIBUTEID_EVENTNOTIFIER ||
        mon->parameters.samplingInterval == 0.0) {
         /* Add to the linked list in the node */
-        res = UA_Server_editNode(server, sub->session, &mon->itemToMonitor.nodeId,
-                                 0, UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
-                                 addMonitoredItemBackpointer, mon);
+        res = editNode(server, sub->session, &mon->itemToMonitor.nodeId, 0,
+                       UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
+                       addMonitoredItemBackpointer, mon);
         if(res == UA_STATUSCODE_GOOD)
             mon->samplingType = UA_MONITOREDITEMSAMPLINGTYPE_EVENT;
     } else if(mon->parameters.samplingInterval == sub->publishingInterval) {
@@ -1628,9 +1634,9 @@ UA_MonitoredItem_unregisterSampling(UA_Server *server, UA_MonitoredItem *mon) {
     case UA_MONITOREDITEMSAMPLINGTYPE_EVENT: {
         /* Removing is always done with the AdminSession. So it also works when
          * the Subscription has been detached from its Session. */
-        UA_Server_editNode(server, &server->adminSession, &mon->itemToMonitor.nodeId,
-                           0, UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
-                           removeMonitoredItemBackPointer, mon);
+        editNode(server, &server->adminSession, &mon->itemToMonitor.nodeId, 0,
+                 UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
+                 removeMonitoredItemBackPointer, mon);
         break;
     }
 

@@ -940,8 +940,19 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
         UA_SOCKADDR_IN sin;
         memset(&sin, 0, sizeof(sin));
         UA_SOCKLEN len = sizeof(sin);
-        UA_getsockname(listenSocket, (UA_SOCKADDR *)&sin, &len);
+        if(UA_getsockname(listenSocket, (UA_SOCKADDR*)&sin, &len) != 0) {
+            UA_LOG_SOCKET_ERRNO_WRAP(
+                UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                            "UDP %u\t| getsockname failed (%s)",
+                            (unsigned)listenSocket, errno_str));
+            UA_close(listenSocket);
+            return UA_STATUSCODE_BADCONNECTIONREJECTED;
+        }
+#if defined(UA_ARCHITECTURE_OUL)
         port = UA_ntohs(sin.sin_port);
+#else
+        port = ntohs(sin.sin_port);
+#endif // UA_ARCHITECTURE_OUL
     }
 
     if(ret < 0) {

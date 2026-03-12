@@ -12,6 +12,7 @@
  *    Copyright 2018 (c) Fabian Arndt, Root-Core
  *    Copyright 2017-2020 (c) HMS Industrial Networks AB (Author: Jonas Green)
  *    Copyright 2020-2022 (c) Christian von Arnim, ISW University of Stuttgart  (for VDW and umati)
+ *    Copyright 2025 (c) o6 Automation GmbH (Author: Julius Pfrommer)
  */
 
 #ifndef UA_SERVER_H_
@@ -490,16 +491,80 @@ UA_Server_writeExecutable(UA_Server *server, const UA_NodeId nodeId,
                           const UA_Boolean executable);
 
 /**
+ * .. _server-method-call:
+ *
  * Method Service Set
  * ------------------
- * The Method Service Set defines the means to invoke methods. A MethodNode
- * shall be a component of an ObjectNode. Since the same MethodNode can be
- * referenced from multiple ObjectNodes, for calling a method, both method and
- * object need to be defined by their NodeId.
  *
- * The input and output arguments of a method are a list of ``UA_Variant``. The
- * type- and size-requirements of the arguments can be retrieved from the
- * **InputArguments** and **OutputArguments** variable below the MethodNode. */
+ * The Method Service Set defines the means to invoke methods. A MethodNode is a
+ * component of an ObjectNode or of an ObjectTypeNode. The input and output
+ * arguments of a method are a list of ``UA_Variant``. The type- and
+ * size-requirements of the arguments can be retrieved from the
+ * **InputArguments** and **OutputArguments** variable below the MethodNode.
+ *
+ * For calling a method, both ``methodId`` and ``objectId`` need to be defined
+ * by their NodeId. This is required because the same MethodNode can be
+ * referenced from multiple objects.
+ *
+ * In this server implementation, when an object is instantiated from a an
+ * ObjectType, all (mandatory) methods are automatically added to the new object
+ * instance. This is done by adding an additional reference to the original
+ * MethodNode. It is however possible to add a custom MethodNode directly to the
+ * object instance. It is also possible to remove a (optional) MethodNode that
+ * exists in the ObjectType from an instance.
+ *
+ * The ``methodId`` can point to a MethodNode that exists in the ObjectType but
+ * not in the object instance. It is resolved to the actual MethodNode of the
+ * object instance by taking the *BrowseName* attribute of the
+ * ``methodId``-MethodNode and looking up the member of the ``objectId`` object
+ * with the same BrowseName.
+ *
+ * The resolved MethodNode then is used to
+ *
+ * - Check permissions for the current Session to call the method
+ * - Obtain the ``UA_MethodCallback`` to execute
+ * - Forwarded as ``methodId`` to said callback
+ *
+ * To showcase the resolution of the MethodNode with an example, consider this
+ * information model::
+ *
+ *      ObjectType                      ObjectType                     Object
+ *    Creature (i=10)  <-isSubTypeOf-  Insect (i=20)  <-hasTypeDef-   Ant (i=30)
+ *          |                               |                            |
+ *     hasComponent                    hasComponent                 hasComponent
+ *          |                               |                            |
+ *          v                               v                            v
+ *       Methods                         Methods                      Methods
+ *    - Walk (i=11)                   - Walk (i=21)                - Walk (i=31)
+ *    - Fly (i=12)                    - Fly (i=22)                 - Amount (i=33)
+ *    - Amount (i=13)                 - Amount (i=23)
+ *
+ * The following table shows what ``methodId`` - ``objectId`` combinations are
+ * allowed to be used as parameters for the Call service and the resolved
+ * ``methodId``.
+ *
+ * ========  ========  ====================================  =================
+ * objectId  methodId  Corresponds to in OO-languages        Resolved methodId
+ * ========  ========  ====================================  =================
+ * i=30      i=31      ``Ant a; a.Walk();``                  i=31
+ * i=30      i=21      ``Ant a; Insect i = a; i.Walk();``    i=31
+ * i=30      i=11      ``Ant a; Creature c = a; c.Walk();``  i=31
+ * i=20      i=23      ``Insect::Amount();``                 i=23
+ * i=10      i=13      ``Creature::Amount();``               i=13
+ * ========  ========  ====================================  =================
+ *
+ * The next table shows ``methodId`` - ``objectId`` combinations that are not
+ * allowed. Note that an ObjecType cannot execute a methodId from a subtype or
+ * instance.
+ *
+ * ========  ========  =====================================================
+ * objectId  methodId  Reason
+ * ========  ========  =====================================================
+ * i=30      i=22      Object "Ant" does not own a method "Fly"
+ * i=30      i=12      Object "Ant" does not own a method "Fly"
+ * i=10      i=23      The method is not owned by the object type "Creature"
+ * i=20      i=13      The method is not owned by the object type "Insect"
+ * ========  ========  ===================================================== */
 
 #ifdef UA_ENABLE_METHODCALLS
 UA_CallMethodResult UA_EXPORT UA_THREADSAFE
@@ -643,9 +708,7 @@ UA_Server_createDataChangeMonitoredItem(UA_Server *server,
  *   /SourceNode => NodeId(i=2253)
  *
  * The order of the keys is identical to the order of SimpleAttributeOperands in
- * the select-clause. This feature requires the build flag ``UA_ENABLE_PARSING``
- * enabled. Otherwise the key-value map uses empty keys (the order of fields is
- * still the same as the specified select-clauses). */
+ * the select-clause. */
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
 
@@ -919,7 +982,7 @@ UA_Server_setVariableNode_callbackValueSource(UA_Server *server,
 /* Deprecated API */
 typedef UA_CallbackValueSource UA_DataSource;
 #define UA_Server_setVariableNode_dataSource(server, nodeId, dataSource) \
-    UA_Server_setVariableNode_callbackValueSource(server, nodeId, dataSource);
+    UA_Server_setVariableNode_callbackValueSource(server, nodeId, dataSource)
 
 /* Deprecated API */
 typedef UA_ValueSourceNotifications UA_ValueCallback;
@@ -949,7 +1012,10 @@ UA_Server_addVariableTypeNode(UA_Server *server,
 
 /**
  * MethodNode
- * ~~~~~~~~~~ */
+ * ~~~~~~~~~~
+ * Please refer to the :ref:`Method Service Set <server-method-call>` to get
+ * information about which MethodNodes may get executed and would thus require
+ * callbacks to be registered. */
 
 typedef UA_StatusCode
 (*UA_MethodCallback)(UA_Server *server,
@@ -1052,6 +1118,50 @@ UA_Server_addDataTypeNode(UA_Server *server,
                           const UA_QualifiedName browseName,
                           const UA_DataTypeAttributes attr,
                           void *nodeContext, UA_NodeId *outNewNodeId);
+
+/**
+ * Due to the history of development, the DataTypeAttributes structure used in
+ * the AddNodes Service does not describe the layout of the DataType. But the
+ * (newer) structures for describing DataTypes do:
+ *
+ * - SimpleTypeDescription
+ * - EnumDescription
+ * - StructureDescription
+ *
+ * The ``UA_Server_addDataTypeFromDescription`` function translates the
+ * DataTypeDescription into a UA_DataType structure and adds it to an internal
+ * array of the server. Then the DataType is automatically decoded in messages
+ * received by the server. Also the ``DataTypeDefinition`` attribute of the
+ * corresponding DataTypeNode can then be read via the Read service.
+ *
+ * The memory layout of the internally generated ``UA_DataType`` corresponds to
+ * the matching C-structure including padding.
+ *
+ * Note that a DataTypeDescription can be added only once during the lifetime of
+ * the server. This protects against existing instances of the DataType to
+ * having their layout changed. */
+
+/* Use the DataType description to create an internal UA_DataType entry in the
+ * server */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_addDataTypeFromDescription(UA_Server *server,
+                                     const UA_ExtensionObject *description);
+
+/* The same as UA_Server_addDataTypeFromDescription, but with the description
+ * already converted into a UA_DataType. Makes a copy of the UA_DataType
+ * internally. */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_addDataType(UA_Server *server, const UA_NodeId parentNodeId,
+                      const UA_DataType *type);
+
+/* Get the entry to the linked list of custom datatypes. This includes both the
+ * datatypes from serverConfig->customDataTypes and the internal custom data
+ * types from UA_Server_addDataType.
+ *
+ * Attention! The output pointer is only valid until the next call to
+ * UA_Server_addDataType. */
+UA_EXPORT UA_THREADSAFE const UA_DataTypeArray *
+UA_Server_getDataTypes(UA_Server *server);
 
 /**
  * ViewNode
@@ -2022,7 +2132,10 @@ struct UA_ServerConfig {
      * indicated by their name. */
     UA_ServerNotificationCallback globalNotificationCallback;
     UA_ServerNotificationCallback lifecycleNotificationCallback;
+    UA_ServerNotificationCallback secureChannelNotificationCallback;
+    UA_ServerNotificationCallback sessionNotificationCallback;
     UA_ServerNotificationCallback serviceNotificationCallback;
+    UA_ServerNotificationCallback subscriptionNotificationCallback;
 
     /* Networking
      * ~~~~~~~~~~
@@ -2074,7 +2187,13 @@ struct UA_ServerConfig {
      * Make sure you really need this before enabling plain text passwords. */
     UA_Boolean allowNonePolicyPassword;
 
-    /* Different sets of certificates are trusted for SecureChannel / Session */
+    /* Different sets of certificates are trusted for SecureChannel / Session.
+     * They correspond to the CertificateGroups "DefaultApplicationGroup" and
+     * "DefaultUserTokenGroup" from Part 12.
+     *
+     * If the client authenticates with an X509IdentityToken (ActivateSession
+     * Service), then this certificate is validated with the sessionPKI before
+     * forwarding the token to the AccessControl plugin. */
     UA_CertificateGroup secureChannelPKI;
     UA_CertificateGroup sessionPKI;
 
