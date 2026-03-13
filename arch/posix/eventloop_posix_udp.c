@@ -74,8 +74,10 @@ typedef enum {
 } MultiCastType;
 
 typedef union {
-#if !defined(ip_mreqn)
+#if defined(UA_ARCHITECTURE_OUL)
     UA_IPMREQ ipv4;
+#elif !defined(__linux__)
+    struct ip_mreq ipv4;
 #else
     struct ip_mreqn ipv4;
 #endif
@@ -200,7 +202,7 @@ setMulticastInterface(const char *netif, struct addrinfo *info,
         if(ifa->ifa_addr->sa_family != info->ai_family)
             continue;
 
-#if defined(UA_ARCHITECTURE_WIN32) || defined(ip_mreqn)
+#if defined(UA_ARCHITECTURE_WIN32) || defined(__linux__)
         idx = UA_if_nametoindex(ifa->ifa_name);
         if(idx == 0)
             continue;
@@ -235,7 +237,7 @@ setMulticastInterface(const char *netif, struct addrinfo *info,
 
     /* Write the interface index */
     if(info->ai_family == AF_INET) {
-#if defined(ip_mreqn)
+#if defined(__linux__)
         req->ipv4.imr_ifindex = idx;
 #endif
 #if UA_IPV6
@@ -255,7 +257,7 @@ setupMulticastRequest(UA_FD socket, MulticastRequest *req, const UA_KeyValueMap 
     if(info->ai_family == AF_INET) {
         struct sockaddr_in *sin = (struct sockaddr_in *)info->ai_addr;
         req->ipv4.imr_multiaddr = sin->sin_addr;
-#if !defined(ip_mreqn)
+#if !defined(__linux__)
         req->ipv4.imr_interface.s_addr = htonl(INADDR_ANY); /* default ANY */
 #else
         req->ipv4.imr_address.s_addr = htonl(INADDR_ANY); /* default ANY */
@@ -940,7 +942,12 @@ UDP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_UInt16 port,
         UA_SOCKADDR_IN sin;
         memset(&sin, 0, sizeof(sin));
         UA_SOCKLEN len = sizeof(sin);
+
+#if defined(UA_ARCHITECTURE_OUL)
         if(UA_getsockname(listenSocket, (UA_SOCKADDR*)&sin, &len) != 0) {
+#else
+        if(getsockname(listenSocket, (struct sockaddr *)&sin, &len) != 0) {
+#endif // UA_ARCHITECTURE_OUL
             UA_LOG_SOCKET_ERRNO_WRAP(
                 UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
                             "UDP %u\t| getsockname failed (%s)",
