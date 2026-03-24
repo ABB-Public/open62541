@@ -70,6 +70,12 @@ struct UA_CertificateGroup {
                                        const UA_ByteString *certificate);
 
     void (*clear)(UA_CertificateGroup *certGroup);
+
+#ifdef UA_ARCHITECTURE_OUL
+    bool trustAll;
+    bool trustIfEmpty;
+    bool trustAllRejected;
+#endif // UA_ARCHITECTURE_OUL
 };
 
 /* Verify that the certificate has the applicationURI in the subject name. */

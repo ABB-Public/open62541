@@ -682,15 +682,19 @@ FileCertStore_verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteStr
         return retval;
     }
 
-#if defined(UA_ARCHITECTURE_OUL) && OUL_PF_O_EMPTY_TRUSTLIST
-    // Empty trustlist is no problemo
-    UA_TrustListDataType tTrustList;
-    context->store->getTrustList(context->store, &tTrustList);
-    if (tTrustList.trustedCertificatesSize == 0)
+#ifdef UA_ARCHITECTURE_OUL
+    context->store->trustAll = certGroup->trustAll;
+    context->store->trustIfEmpty = certGroup->trustIfEmpty;
+    context->store->trustAllRejected = certGroup->trustAllRejected;
+    size_t oldTrustListSize = SIZE_MAX;
+    if(certGroup->trustAllRejected)
     {
-        OUL_LOG_WARNING("Empty trust list, certificate automatically trusted");
-        UA_TrustListDataType_clear(&tTrustList);
-        return UA_STATUSCODE_GOOD;
+        UA_TrustListDataType list;
+        UA_TrustListDataType_init(&list);
+        if(!context->store->getTrustList(context->store, &list)) {
+            oldTrustListSize = list.trustedCertificatesSize;
+        }
+        UA_TrustListDataType_clear(&list);
     }
 #endif // UA_ARCHITECTURE_OUL
 
@@ -706,6 +710,18 @@ FileCertStore_verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteStr
         writeTrustList(certGroup, rejectedList, rejectedListSize, context->rejectedCertFolder);
         UA_Array_delete(rejectedList, rejectedListSize, &UA_TYPES[UA_TYPES_BYTESTRING]);
     }
+
+#ifdef UA_ARCHITECTURE_OUL
+    if(certGroup->trustAllRejected && SIZE_MAX != oldTrustListSize)
+    {
+        UA_TrustListDataType list;
+        UA_TrustListDataType_init(&list);
+        if(!context->store->getTrustList(context->store, &list) && list.trustedCertificatesSize > oldTrustListSize) {
+            writeTrustList(certGroup, list.trustedCertificates, list.trustedCertificatesSize, context->trustedCertFolder);
+        }
+        UA_TrustListDataType_clear(&list);
+    }
+#endif // UA_ARCHITECTURE_OUL
 
     return retval;
 }
@@ -769,6 +785,12 @@ UA_CertificateGroup_Filestore(UA_CertificateGroup *certGroup,
     certGroup->getCertificateCrls = FileCertStore_getCertificateCrls;
     certGroup->verifyCertificate = FileCertStore_verifyCertificate;
     certGroup->clear = FileCertStore_clear;
+
+#ifdef UA_ARCHITECTURE_OUL
+    certGroup->trustAll = false;
+    certGroup->trustIfEmpty = false;
+    certGroup->trustAllRejected = false;
+#endif // UA_ARCHITECTURE_OUL
 
     /* Set PKI Store context data */
     FileCertStore *context = (FileCertStore *)UA_calloc(1, sizeof(FileCertStore));

@@ -616,6 +616,45 @@ MemoryCertStore_verifyCertificate(UA_CertificateGroup *certGroup,
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
 
+#ifdef UA_ARCHITECTURE_OUL
+    if(certGroup->trustAll) {
+        OUL_LOG_WARNING("Trust all, certificate automatically trusted");
+        return UA_STATUSCODE_GOOD;
+    }
+    if(certGroup->trustIfEmpty) {
+        MemoryCertStore* context = (MemoryCertStore*)certGroup->context;
+        if(0 == context->trustList.trustedCertificatesSize &&
+           0 == context->trustList.trustedCrlsSize &&
+           0 == context->trustList.issuerCertificatesSize &&
+           0 == context->trustList.issuerCrlsSize) {
+            OUL_LOG_WARNING("Empty trust list, certificate automatically trusted");
+            return UA_STATUSCODE_GOOD;
+        }
+    }
+    if(certGroup->trustAllRejected) {
+        MemoryCertStore* context = (MemoryCertStore*)certGroup->context;
+        bool addToTrustList = true;
+        for(size_t i = 0; i < context->trustList.trustedCertificatesSize && addToTrustList; i++) {
+            if(UA_ByteString_equal(certificate, &context->trustList.trustedCertificates[i])) {
+                addToTrustList = false;
+            }
+        }
+        if(addToTrustList) {
+            if(context->maxTrustListSize != 0 && context->trustList.trustedCertificatesSize >= context->maxTrustListSize) {
+                UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                        "Trust all rejected: Add to list failed > list full");
+            } else if(UA_Array_appendCopy((void**)&context->trustList.trustedCertificates, &context->trustList.trustedCertificatesSize,
+                                    certificate, &UA_TYPES[UA_TYPES_BYTESTRING])) {
+                UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                        "Trust all rejected: Add to list failed > append failed");
+            } else {
+                UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                        "Trust all rejected: Add to list failed > certificate trusted");
+            }
+        }
+    }
+#endif // UA_ARCHITECTURE_OUL
+
     UA_StatusCode retval = verifyCertificate(certGroup, certificate);
     if(retval != UA_STATUSCODE_GOOD) {
         if(MemoryCertStore_addToRejectedList(certGroup, certificate) != UA_STATUSCODE_GOOD) {
@@ -665,6 +704,12 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
     /* Default values */
     context->maxTrustListSize = 65535;
     context->maxRejectedListSize = 100;
+
+#ifdef UA_ARCHITECTURE_OUL
+    certGroup->trustAll = false;
+    certGroup->trustIfEmpty = false;
+    certGroup->trustAllRejected = false;
+#endif // UA_ARCHITECTURE_OUL
 
     if(params) {
         const UA_UInt32 *maxTrustListSize = (const UA_UInt32*)
