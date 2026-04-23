@@ -19,11 +19,8 @@
 _UA_BEGIN_DECLS
 
 #ifdef UA_ENABLE_DISCOVERY
-
-#ifdef UA_ENABLE_DISCOVERY
 struct UA_DiscoveryManager;
 typedef struct UA_DiscoveryManager UA_DiscoveryManager;
-#endif
 
 typedef struct registeredServer {
     LIST_ENTRY(registeredServer) pointers;
@@ -60,21 +57,21 @@ struct UA_DiscoveryManager {
     UA_Server_registerServerCallback registerServerCallback;
     void* registerServerCallbackData;
 
-# ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_Boolean mdnsMainSrvAdded;
     UA_Server_serverOnNetworkCallback serverOnNetworkCallback;
     void *serverOnNetworkCallbackData;
 #  ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
     UA_ConnectionManager *cm;
-#  endif
-# endif /* UA_ENABLE_DISCOVERY_MULTICAST */
+#  endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
+# endif /* UA_ENABLE_DISCOVERY_MULTICAST || UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE */
 };
 
 void
 UA_DiscoveryManager_setState(UA_DiscoveryManager *dm,
                              UA_LifecycleState state);
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
 
 /* Sends out a new mDNS package for the given server data. This Method is
  * normally called when another server calls the RegisterServer Service on this
@@ -124,9 +121,25 @@ UA_DiscoveryManager_mdnsCyclicTimer(UA_Server *server, void *data);
 UA_StatusCode
 UA_Discovery_resendQueries(void);
 
-#endif /* UA_ENABLE_DISCOVERY_MULTICAST */
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE
 
-#endif /* UA_ENABLE_DISCOVERY */
+/* Set the self mDNS record name to prevent the server from responding to its own announcements.
+ * This is normally set automatically during UA_DiscoveryManager_startMulticast, but can be
+ * overridden with this function if needed. */
+UA_StatusCode
+UA_DiscoveryManager_setSelfMdnsRecord(UA_DiscoveryManager *dm, const UA_String *recordName);
+
+/* Opaque-pointer wrapper for the mDNS record received callback.
+ * Avoids exposing struct resource (an mdnsd internal type) in this public header.
+ * Pass struct resource* as pvRecord; the implementation casts it back internally. */
+void
+UA_Discovery_onMdnsRecord(const void *pvRecord, void *pvData);
+
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE */
+
+#endif /* defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE) */
+
+#endif /* UA_ENABLE_DISCOVERY*/
 
 _UA_END_DECLS
 

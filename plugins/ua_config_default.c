@@ -386,7 +386,7 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     /* conf->applicationDescription.discoveryUrlsSize = 0; */
     /* conf->applicationDescription.discoveryUrls = NULL; */
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_MdnsDiscoveryConfiguration_clear(&conf->mdnsConfig);
 # ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
     conf->mdnsInterfaceIP = UA_STRING_NULL;

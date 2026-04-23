@@ -201,7 +201,7 @@ Service_FindServers(UA_Server *server, UA_Session *session,
     return true;
 }
 
-#if defined(UA_ENABLE_DISCOVERY) && defined(UA_ENABLE_DISCOVERY_MULTICAST)
+#if defined(UA_ENABLE_DISCOVERY) && (defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE))
 /* All filter criteria must be fulfilled in the list entry. The comparison is
  * case insensitive. Returns true if the entry matches the filter. */
 static UA_Boolean
@@ -668,7 +668,7 @@ process_RegisterServer(UA_Server *server, UA_Session *session,
 #endif
     }
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     if(sc->mdnsEnabled) {
         for(size_t i = 0; i < requestServer->discoveryUrlsSize; i++) {
             /* create TXT if is online and first index, delete TXT if is offline

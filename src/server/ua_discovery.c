@@ -65,8 +65,7 @@ UA_DiscoveryManager_clear(struct UA_ServerComponent *sc) {
         UA_RegisteredServer_clear(&rs->registeredServer);
         UA_free(rs);
     }
-
-# ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST
     UA_DiscoveryManager_clearMdns(dm);
 # endif /* UA_ENABLE_DISCOVERY_MULTICAST */
 
@@ -150,9 +149,9 @@ UA_DiscoveryManager_start(struct UA_ServerComponent *sc,
 
     UA_DiscoveryManager *dm = (UA_DiscoveryManager*)sc;
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_DiscoveryManager_resetServerOnNetworkRecordCounter(dm);
-#endif /* UA_ENABLE_DISCOVERY_MULTICAST */
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST || UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE */
 
     UA_StatusCode res =
         addRepeatedCallback(server, UA_DiscoveryManager_cyclicTimer,
@@ -160,7 +159,7 @@ UA_DiscoveryManager_start(struct UA_ServerComponent *sc,
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     if(server->config.mdnsEnabled)
         UA_DiscoveryManager_startMulticast(dm);
 #endif
@@ -184,7 +183,7 @@ UA_DiscoveryManager_stop(struct UA_ServerComponent *sc) {
         UA_Client_disconnectSecureChannelAsync(dm->registerRequests[i].client);
     }
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     if(sc->server->config.mdnsEnabled)
         UA_DiscoveryManager_stopMulticast(dm);
 #endif
@@ -363,7 +362,7 @@ discoveryClientStateCallback(UA_Client *client,
     const UA_DataType *respType;
     UA_RegisterServerRequest reg1;
     UA_RegisterServer2Request reg2;
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_ExtensionObject mdnsConfig;
 #endif
     void *request;
@@ -376,7 +375,7 @@ discoveryClientStateCallback(UA_Client *client,
         respType = &UA_TYPES[UA_TYPES_REGISTERSERVER2RESPONSE];
         request = &reg2;
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
         /* Set the configuration that is only available for
          * UA_RegisterServer2Request */
         UA_ExtensionObject_setValueNoDelete(&mdnsConfig, &sc->mdnsConfig,

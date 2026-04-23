@@ -298,7 +298,7 @@ typedef union {
     UA_FindServersRequest findServersRequest;
     UA_GetEndpointsRequest getEndpointsRequest;
 #ifdef UA_ENABLE_DISCOVERY
-# ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_FindServersOnNetworkRequest findServersOnNetworkRequest;
 # endif
     UA_RegisterServerRequest registerServerRequest;
@@ -345,7 +345,7 @@ typedef union {
     UA_FindServersResponse findServersResponse;
     UA_GetEndpointsResponse getEndpointsResponse;
 #ifdef UA_ENABLE_DISCOVERY
-# ifdef UA_ENABLE_DISCOVERY_MULTICAST
+# if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_FindServersOnNetworkResponse findServersOnNetworkResponse;
 # endif
     UA_RegisterServerResponse registerServerResponse;

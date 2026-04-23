@@ -18,7 +18,7 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
     /* Server Description */
     UA_BuildInfo_clear(&config->buildInfo);
     UA_ApplicationDescription_clear(&config->applicationDescription);
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_MdnsDiscoveryConfiguration_clear(&config->mdnsConfig);
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
     UA_String_clear(&config->mdnsInterfaceIP);

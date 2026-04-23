@@ -11,7 +11,7 @@
 #include "ua_server_internal.h"
 #include <stdlib.h>
 #include <libmdnsd/mdnsd.h>
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
+#if  defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
 
 #ifndef UA_ENABLE_AMALGAMATION
 #include <libmdnsd/xht.h>
@@ -56,10 +56,12 @@ typedef struct serverOnNetwork_hash_entry {
 } serverOnNetwork_hash_entry;
 
 typedef struct mdnsPrivate {
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
     mdns_daemon_t *mdnsDaemon;
     uintptr_t mdnsSendConnection;
     uintptr_t mdnsRecvConnections[UA_MAXMDNSRECVSOCKETS];
     size_t mdnsRecvConnectionsSize;
+#endif
     /* hash mapping domain name to serverOnNetwork list entry */
     struct serverOnNetwork_hash_entry* serverOnNetworkHash[SERVER_ON_NETWORK_HASH_SIZE];
     LIST_HEAD(, serverOnNetwork) serverOnNetwork;
@@ -456,6 +458,15 @@ mdns_record_received(const struct resource *r, void *data) {
                                     dm->serverOnNetworkCallbackData);
 }
 
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE
+void
+UA_Discovery_onMdnsRecord(const void *pvRecord, void *pvData) {
+    mdns_record_received((const struct resource *)pvRecord, pvData);
+}
+#endif
+
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
+
 static void
 mdns_create_txt(UA_DiscoveryManager *dm, const char *fullServiceDomain, const char *path,
                 const UA_String *capabilites, const size_t capabilitiesSize,
@@ -673,6 +684,8 @@ mdns_set_address_record(UA_DiscoveryManager *dm, const char *fullServiceDomain,
 
 #endif /* UA_ARCHITECTURE_WIN32 */
 
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
+
 UA_StatusCode
 UA_DiscoveryManager_clearServerOnNetwork(UA_DiscoveryManager *dm) {
     if(!dm) {
@@ -756,6 +769,8 @@ UA_DiscoveryManager_getServerOnNetworkCounterResetTime(UA_DiscoveryManager *dm) 
     }
     return mdnsPrivateData.serverOnNetworkRecordIdLastReset;
 }
+
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
 
 typedef enum {
     UA_DISCOVERY_TCP,    /* OPC UA TCP mapping */
@@ -1196,6 +1211,8 @@ UA_Discovery_updateMdnsForDiscoveryUrl(UA_DiscoveryManager *dm, const UA_String 
                        "Could not add mDNS record for hostname %S", serverName);
 }
 
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
+
 void
 UA_Server_setServerOnNetworkCallback(UA_Server *server,
                                      UA_Server_serverOnNetworkCallback cb,
@@ -1209,6 +1226,24 @@ UA_Server_setServerOnNetworkCallback(UA_Server *server,
     }
     unlockServer(server);
 }
+
+UA_StatusCode
+UA_DiscoveryManager_setSelfMdnsRecord(UA_DiscoveryManager *dm, const UA_String *recordName) {
+    if(!dm)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    /* Clear existing record */
+    UA_String_clear(&mdnsPrivateData.selfMdnsRecord);
+
+    /* If NULL or empty string passed, just clear (don't set new value) */
+    if(!recordName || recordName->length == 0)
+        return UA_STATUSCODE_GOOD;
+
+    /* Set new record */
+    return UA_String_copy(recordName, &mdnsPrivateData.selfMdnsRecord);
+}
+
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
 
 static void
 UA_Discovery_multicastConflict(char *name, int type, void *arg) {
@@ -1520,3 +1555,4 @@ UA_Discovery_resendQueries() {
 }
 
 #endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST || UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */

@@ -1675,7 +1675,7 @@ void UA_EXPORT UA_THREADSAFE
 UA_Server_setRegisterServerCallback(UA_Server *server,
                                     UA_Server_registerServerCallback cb, void* data);
 
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
 
 /* Callback for server detected through mDNS. Data is passed from the register
  * call
@@ -1705,8 +1705,7 @@ UA_Server_setServerOnNetworkCallback(UA_Server *server,
                                      UA_Server_serverOnNetworkCallback cb,
                                      void* data);
 
-#endif /* UA_ENABLE_DISCOVERY_MULTICAST */
-
+#endif /* UA_ENABLE_DISCOVERY_MULTICAST || UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE */
 #endif /* UA_ENABLE_DISCOVERY */
 
 /**
@@ -2275,7 +2274,7 @@ struct UA_ServerConfig {
      * state of the semaphore file. */
     UA_UInt32 discoveryCleanupTimeout;
 
-# ifdef UA_ENABLE_DISCOVERY_MULTICAST
+# if defined(UA_ENABLE_DISCOVERY_MULTICAST) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
     UA_Boolean mdnsEnabled;
     UA_MdnsDiscoveryConfiguration mdnsConfig;
 #  ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
