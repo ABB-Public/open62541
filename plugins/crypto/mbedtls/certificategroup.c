@@ -640,7 +640,13 @@ MemoryCertStore_verifyCertificate(UA_CertificateGroup *certGroup,
             }
         }
         if(addToTrustList) {
-            if(context->maxTrustListSize != 0 && context->trustList.trustedCertificatesSize >= context->maxTrustListSize) {
+            if(UA_TRUSTLIST_MAX_COUNT != 0 &&
+               context->trustList.trustedCertificatesSize >= (size_t)UA_TRUSTLIST_MAX_COUNT) {
+                UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                        "Trust all rejected: Add to list failed > count limit reached");
+            } else if(context->maxTrustListSize != 0 &&
+               UA_TrustListDataType_getSize(&context->trustList) +
+               (UA_UInt32)certificate->length > context->maxTrustListSize) {
                 UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
                         "Trust all rejected: Add to list failed > list full");
             } else if(UA_Array_appendCopy((void**)&context->trustList.trustedCertificates, &context->trustList.trustedCertificatesSize,
@@ -648,8 +654,9 @@ MemoryCertStore_verifyCertificate(UA_CertificateGroup *certGroup,
                 UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
                         "Trust all rejected: Add to list failed > append failed");
             } else {
+                context->reloadRequired = true;
                 UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
-                        "Trust all rejected: Add to list failed > certificate trusted");
+                        "Trust all rejected: Add to list > certificate trusted");
             }
         }
     }
@@ -706,6 +713,7 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
     context->maxRejectedListSize = 100;
 
 #ifdef UA_ARCHITECTURE_OUL
+    context->maxRejectedListSize = UA_REJECTEDLIST_MAX_COUNT;
     certGroup->trustAll = false;
     certGroup->trustIfEmpty = false;
     certGroup->trustAllRejected = false;
