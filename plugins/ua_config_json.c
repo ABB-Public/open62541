@@ -903,6 +903,12 @@ parseJSONConfig(UA_ServerConfig *config, UA_ByteString json_config) {
     cj5_token tokens[MAX_TOKENS];
     cj5_result r = cj5_parse(json, (unsigned int)json_config.length, tokens, MAX_TOKENS, NULL);
 
+    /* Validate the parse result: must succeed and produce a root object
+     * with at least one key-value pair (i.e. >= 2 tokens). */
+    if(r.error != CJ5_ERROR_NONE || r.num_tokens < 2 ||
+       r.tokens[0].type != CJ5_TOKEN_OBJECT)
+        return UA_STATUSCODE_BADDECODINGERROR;
+
     ParsingCtx ctx;
     ctx.json = json;
     ctx.result = r;
@@ -1049,8 +1055,10 @@ UA_Server_newFromFile(const UA_ByteString json_config) {
     memset(&config, 0, sizeof(UA_ServerConfig));
     UA_StatusCode res = UA_ServerConfig_setDefault(&config);
     res |= parseJSONConfig(&config, json_config);
-    if(res != UA_STATUSCODE_GOOD)
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_ServerConfig_clear(&config);
         return NULL;
+    }
     return UA_Server_newWithConfig(&config);
 }
 
@@ -1074,11 +1082,28 @@ loadCertificateFile(const char *const path) {
     }
 
     /* Get the file length, allocate the data and read */
-    fseek(fp, 0, SEEK_END);
-    fileContents.length = (size_t)ftell(fp);
+    if(fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        errno = 0;
+        return fileContents;
+    }
+
+    long length = ftell(fp);
+    if(length < 0) {
+        fclose(fp);
+        errno = 0;
+        return fileContents;
+    }
+
+    fileContents.length = (size_t)length;
     fileContents.data = (UA_Byte *)UA_malloc(fileContents.length * sizeof(UA_Byte));
     if(fileContents.data) {
-        fseek(fp, 0, SEEK_SET);
+        if(fseek(fp, 0, SEEK_SET) != 0) {
+            fclose(fp);
+            UA_ByteString_clear(&fileContents);
+            errno = 0;
+            return fileContents;
+        }
         size_t read = fread(fileContents.data, sizeof(UA_Byte), fileContents.length, fp);
         if(read != fileContents.length)
             UA_ByteString_clear(&fileContents);

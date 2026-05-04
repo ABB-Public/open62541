@@ -43,7 +43,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # overwritten with more detailed information if git is available.
 set(OPEN62541_VER_MAJOR 1)
 set(OPEN62541_VER_MINOR 5)
-set(OPEN62541_VER_PATCH 3)
+set(OPEN62541_VER_PATCH 4)
 set(OPEN62541_VER_LABEL "") # like "-rc1" or "-g4538abcd" or "-g4538abcd-dirty"
 set(OPEN62541_VER_COMMIT "unknown-commit")
 
@@ -442,6 +442,8 @@ endif()
 option(UA_BUILD_EXAMPLES "Build example servers and clients" OFF)
 option(UA_BUILD_TOOLS "Build OPC UA shell tools" OFF)
 option(UA_BUILD_UNIT_TESTS "Build the unit tests" OFF)
+option(UA_BUILD_INTEROP_TESTS "Build cross-SDK interoperability test client and server (CI only)" OFF)
+mark_as_advanced(UA_BUILD_INTEROP_TESTS)
 option(UA_BUILD_FUZZING "Build the fuzzing executables" OFF)
 mark_as_advanced(UA_BUILD_FUZZING)
 if(UA_BUILD_FUZZING)
@@ -624,6 +626,23 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
     # Some methods need unused arguments to conform with a defined method pointer signature
     check_add_cc_flag("-Wno-unused-parameter")
 
+    # Clang 22 added -Wcast-function-type-mismatch to -Wextra; suppress the parent group.
+    # add_cc_flag bypasses check_c_compiler_flag which can give false negatives under -Werror.
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND
+       CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
+        add_cc_flag("-Wno-cast-function-type")
+    else()
+        check_add_cc_flag("-Wno-cast-function-type")
+    endif()
+
+    # Clang 22 flags __COUNTER__ as -Wc2y-extensions under -Wpedantic -std=c99
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND
+       CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "22.0")
+        add_cc_flag("-Wno-c2y-extensions")
+    else()
+        check_add_cc_flag("-Wno-c2y-extensions")
+    endif()
+
     # Overlength strings may occur in generated code and are not harmful
     check_add_cc_flag("-Wno-overlength-strings")
 
@@ -677,7 +696,6 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
     # Threading support
     if(UA_MULTITHREADING GREATER_EQUAL 100 AND NOT WIN32)
         check_add_cc_flag("-pthread")
-        check_add_cc_flag("-ftls-model=initial-exec") # Enable thread-local variables in the .so shared object
     endif()
 
     # Force 32bit build
@@ -857,7 +875,7 @@ set(lib_headers ${PROJECT_SOURCE_DIR}/deps/open62541_queue.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_internal.h
                 ${PROJECT_SOURCE_DIR}/src/client/ua_client_internal.h)
 
-if(UA_ENABLE_ENCRYPTION AND UA_ARCHITECTURE_WIN32)
+if(UA_ENABLE_ENCRYPTION AND (UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION))
     list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/tr_dirent.h)
 endif()
 
@@ -897,13 +915,6 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_monitoreditem.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_securechannel.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_nodemanagement.c
-                # client
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client.c
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client_connect.c
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client_discovery.c
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client_highlevel.c
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client_subscriptions.c
-                ${PROJECT_SOURCE_DIR}/src/client/ua_client_util.c
                 # dependencies
                 ${PROJECT_SOURCE_DIR}/deps/libc_time.c
                 ${PROJECT_SOURCE_DIR}/deps/pcg_basic.c
@@ -919,6 +930,15 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
 if(UA_GENERATED_NAMESPACE_ZERO)
     list(APPEND lib_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/namespace0_generated.h)
     list(APPEND lib_sources ${PROJECT_BINARY_DIR}/src_generated/open62541/namespace0_generated.c)
+endif()
+
+if(UA_ENABLE_DISCOVERY OR UA_ENABLE_AMALGAMATION)
+    list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/client/ua_client.c
+                            ${PROJECT_SOURCE_DIR}/src/client/ua_client_connect.c
+                            ${PROJECT_SOURCE_DIR}/src/client/ua_client_discovery.c
+                            ${PROJECT_SOURCE_DIR}/src/client/ua_client_highlevel.c
+                            ${PROJECT_SOURCE_DIR}/src/client/ua_client_subscriptions.c
+                            ${PROJECT_SOURCE_DIR}/src/client/ua_client_util.c)
 endif()
 
 if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
@@ -1023,7 +1043,7 @@ set(plugin_sources ${PROJECT_SOURCE_DIR}/plugins/ua_log_stdout.c
                    ${PROJECT_SOURCE_DIR}/plugins/crypto/ua_securitypolicy_none.c)
 
 # Add clock implementation based on the base architecture
-if(UA_ARCHITECTURE_POSIX OR UA_ARCHITECTURE_WIN32)
+if(UA_ARCHITECTURE_POSIX OR UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION)
     list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/arch/posix/clock_posix.c)
 endif()
 
@@ -1136,6 +1156,10 @@ if(UA_ENABLE_ENCRYPTION_MBEDTLS OR UA_ENABLE_AMALGAMATION)
          ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_aes256sha256rsapss.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_pubsub_aes128ctr.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_pubsub_aes256ctr.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_eccnistp256.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_eccnistp384.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_eccbrainpoolp256r1.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/securitypolicy_eccbrainpoolp384r1.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/create_certificate.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/mbedtls/certificategroup.c)
 endif()
@@ -1151,6 +1175,11 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_LIBRESSL OR UA_ENABLE_AM
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_aes128sha256rsaoaep.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_aes256sha256rsapss.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp256.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp384.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccbrainpoolp256r1.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccbrainpoolp384r1.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_ecccurve25519.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_ecccurve448.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/create_certificate.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/certificategroup.c)
 endif()
@@ -1510,6 +1539,23 @@ endif()
 if(UA_BUILD_UNIT_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# Build the interop targets standalone (no Check framework, no full examples)
+# when only interop tests are needed.  interop_server and check_interop_client
+# are the only two binaries required by tools/ci/cross-sdk/interop_test.sh.
+if(UA_BUILD_INTEROP_TESTS AND NOT UA_BUILD_UNIT_TESTS)
+    add_executable(interop_server tests/interop/interop_server.c)
+    target_link_libraries(interop_server open62541::open62541)
+    set_target_properties(interop_server PROPERTIES
+        FOLDER "tests"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
+
+    add_executable(check_interop_client tests/interop/check_interop_client.c)
+    target_link_libraries(check_interop_client open62541::open62541)
+    set_target_properties(check_interop_client PROPERTIES
+        FOLDER "tests"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
 endif()
 
 if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_BUILD_FUZZING_CORPUS)

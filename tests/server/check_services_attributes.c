@@ -651,6 +651,42 @@ START_TEST(ReadSingleDataSourceAttributeArrayDimensionsWithoutTimestamp) {
     UA_DataValue_clear(&resp);
 } END_TEST
 
+START_TEST(ReadSingleAttributeServerTimestampOnError) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_STRING(1, "the.answer");
+    rvi.attributeId = UA_ATTRIBUTEID_NODEID;
+    rvi.indexRange = UA_STRING("0:1");
+
+    UA_DataValue resp = UA_Server_read(server, &rvi, UA_TIMESTAMPSTORETURN_BOTH);
+    ck_assert_int_eq(UA_STATUSCODE_BADINDEXRANGENODATA, resp.status);
+    ck_assert(resp.hasServerTimestamp);
+    UA_DataValue_clear(&resp);
+
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_STRING(1, "the.answer");
+    rvi.attributeId = UA_ATTRIBUTEID_VALUE;
+    rvi.dataEncoding.name = UA_STRING("invalid");
+
+    resp = UA_Server_read(server, &rvi, UA_TIMESTAMPSTORETURN_BOTH);
+    ck_assert_int_eq(UA_STATUSCODE_BADDATAENCODINGINVALID, resp.status);
+    ck_assert(resp.hasServerTimestamp);
+    UA_DataValue_clear(&resp);
+} END_TEST
+
+START_TEST(ReadSingleAttributeSourceTimestampOnValueError) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_STRING(1, "the.answer");
+    rvi.attributeId = UA_ATTRIBUTEID_VALUE;
+    rvi.dataEncoding.name = UA_STRING("invalid");
+
+    UA_DataValue resp = UA_Server_read(server, &rvi, UA_TIMESTAMPSTORETURN_BOTH);
+    ck_assert_int_eq(UA_STATUSCODE_BADDATAENCODINGINVALID, resp.status);
+    ck_assert(resp.hasSourceTimestamp);
+    UA_DataValue_clear(&resp);
+} END_TEST
+
 START_TEST(ReadSingleAttributeDataTypeDefinitionWithoutTimestamp) {
     UA_ReadValueId rvi;
     UA_ReadValueId_init(&rvi);
@@ -1387,6 +1423,29 @@ START_TEST(WriteDataValue) {
     UA_Variant_clear(&rVar);
 } END_TEST
 
+START_TEST(WriteDataValueUncertainStatus) {
+    /* Write a value with uncertain status and verify it can be read back.
+     * Previously, readWithReadValue treated any non-good status as error. */
+    UA_NodeId nodeId = UA_NODEID_STRING(1, "the.answer");
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    UA_Int32 val = 42;
+    UA_Variant_setScalar(&dv.value, &val, &UA_TYPES[UA_TYPES_INT32]);
+    dv.hasValue = true;
+    dv.status = UA_STATUSCODE_UNCERTAININITIALVALUE;
+    dv.hasStatus = true;
+    UA_StatusCode retval = UA_Server_writeDataValue(server, nodeId, dv);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Read back - should succeed despite uncertain status */
+    UA_Variant rVar;
+    UA_Variant_init(&rVar);
+    retval = UA_Server_readValue(server, nodeId, &rVar);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(*(UA_Int32 *)rVar.data, 42);
+    UA_Variant_clear(&rVar);
+} END_TEST
+
 START_TEST(WriteDisplayName_Success) {
     UA_NodeId nodeId = UA_NODEID_STRING(1, "the.answer");
     /* Use same locale as the original node ("locale") so it updates
@@ -1600,6 +1659,8 @@ static Suite * testSuite_services_attributes(void) {
     tcase_add_test(tc_readSingleAttributes, ReadSingleDataSourceAttributeValueEmptyWithoutTimestamp);
     tcase_add_test(tc_readSingleAttributes, ReadSingleDataSourceAttributeDataTypeWithoutTimestamp);
     tcase_add_test(tc_readSingleAttributes, ReadSingleDataSourceAttributeArrayDimensionsWithoutTimestamp);
+    tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeServerTimestampOnError);
+    tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeSourceTimestampOnValueError);
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeDataTypeDefinitionWithoutTimestamp);
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeValueWithExternalSource);
 
@@ -1650,6 +1711,7 @@ static Suite * testSuite_services_attributes(void) {
     tcase_add_test(tc_ext, WriteObjectProperty_NotFound);
     tcase_add_test(tc_ext, WriteObjectProperty_Scalar);
     tcase_add_test(tc_ext, WriteDataValue);
+    tcase_add_test(tc_ext, WriteDataValueUncertainStatus);
     tcase_add_test(tc_ext, WriteDisplayName_Success);
     tcase_add_test(tc_ext, WriteDescription_Success);
     tcase_add_test(tc_ext, WriteWriteMask_Success);

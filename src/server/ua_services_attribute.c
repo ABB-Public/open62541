@@ -17,6 +17,7 @@
  *    Copyright 2017-2020 (c) HMS Industrial Networks AB (Author: Jonas Green)
  *    Copyright 2017 (c) Henrik Norrman
  *    Copyright 2020 (c) Christian von Arnim, ISW University of Stuttgart  (for VDW and umati)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include "ua_server_internal.h"
@@ -82,6 +83,14 @@ getUserWriteMask(UA_Server *server, const UA_Session *session,
                           session ? &session->sessionId : NULL,
                           session ? session->context : NULL,
                           &head->nodeId, head->context);
+}
+
+static UA_Byte
+getAccessLevel(UA_Server *server, const UA_Session *session,
+               const UA_VariableNode *node) {
+    if(session == &server->adminSession)
+        return 0xFF; /* the local admin user has all rights */
+    return node->accessLevel;
 }
 
 static UA_Byte
@@ -216,6 +225,26 @@ readCallbackValueAttribute(UA_Server *server, UA_Session *session,
     return retval;
 }
 
+/* OPC UA Part 6: Non-nullable built-in types are Boolean and the 
+ * numeric types (SByte..Double), StatusCode and Enumerations.
+ * All remaining built-in types are nullable. */
+static bool
+isNullableDataType(UA_Server *server, const UA_NodeId *dataType) {
+    const UA_DataType *type = UA_Server_findDataType(server, dataType);
+    if(!type)
+        return true; /* Unknown type */
+    if(UA_DataType_isNumeric(type))
+        return false;
+    switch(type->typeKind) {
+        case UA_DATATYPEKIND_BOOLEAN:
+        case UA_DATATYPEKIND_STATUSCODE:
+        case UA_DATATYPEKIND_ENUM:
+            return false;
+        default:
+            return true;
+    }
+}
+
 static UA_StatusCode
 readValueAttributeComplete(UA_Server *server, UA_Session *session,
                            const UA_VariableNode *vn, UA_TimestampsToReturn timestamps,
@@ -279,6 +308,41 @@ static const UA_String jsonEncoding = {sizeof("Default JSON")-1, (UA_Byte*)"Defa
         break;                                                  \
     }
 
+static void
+addMissingTimestamps(UA_Server *server, UA_DataValue *v,
+              UA_TimestampsToReturn timestampsToReturn,
+              const UA_ReadValueId *id) {
+    /* Always use the current time as the server-timestamp */
+    if(timestampsToReturn == UA_TIMESTAMPSTORETURN_SERVER ||
+       timestampsToReturn == UA_TIMESTAMPSTORETURN_BOTH) {
+        UA_EventLoop *el = server->config.eventLoop;
+        v->serverTimestamp = el->dateTime_now(el);
+        v->hasServerTimestamp = true;
+        v->hasServerPicoseconds = false;
+    } else {
+        v->hasServerTimestamp = false;
+        v->hasServerPicoseconds = false;
+    }
+
+    /* Remove source timestamps when not required */
+    if(timestampsToReturn == UA_TIMESTAMPSTORETURN_SERVER ||
+       timestampsToReturn == UA_TIMESTAMPSTORETURN_NEITHER) {
+        v->hasSourceTimestamp = false;
+        v->hasSourcePicoseconds = false;
+    } else if(timestampsToReturn == UA_TIMESTAMPSTORETURN_SOURCE ||
+              timestampsToReturn == UA_TIMESTAMPSTORETURN_BOTH) {
+        /* Optional behavior and not required by the specification: Always
+         * set a SourceTimestamp for the value attribute, even if the value
+         * source didn't return one. */
+        if(!v->hasSourceTimestamp && id->attributeId == UA_ATTRIBUTEID_VALUE) {
+            UA_EventLoop *el = server->config.eventLoop;
+            v->sourceTimestamp = el->dateTime_now(el);
+            v->hasSourceTimestamp = true;
+            v->hasSourcePicoseconds = false;
+        }
+    }
+}
+
 /* Returns whether the operation is done or an async operation has been
  * triggered. */
 static UA_Boolean
@@ -298,6 +362,7 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
         else
            v->status = UA_STATUSCODE_BADDATAENCODINGINVALID;
         v->hasStatus = true;
+        addMissingTimestamps(server, v, timestampsToReturn, id);
         return true;
     }
 
@@ -305,6 +370,7 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
     if(id->indexRange.length > 0 && id->attributeId != UA_ATTRIBUTEID_VALUE) {
         v->hasStatus = true;
         v->status = UA_STATUSCODE_BADINDEXRANGENODATA;
+        addMissingTimestamps(server, v, timestampsToReturn, id);
         return true;
     }
 
@@ -542,24 +608,21 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
         v->status = retval;
     }
 
-    /* Always use the current time as the server-timestamp */
-    if(timestampsToReturn == UA_TIMESTAMPSTORETURN_SERVER ||
-       timestampsToReturn == UA_TIMESTAMPSTORETURN_BOTH) {
-        UA_EventLoop *el = server->config.eventLoop;
-        v->serverTimestamp = el->dateTime_now(el);
-        v->hasServerTimestamp = true;
-        v->hasServerPicoseconds = false;
-    } else {
-        v->hasServerTimestamp = false;
-        v->hasServerPicoseconds = false;
+    /* OPC UA Part 4:  StatusCode Good is only permitted for nullable
+     * DataTypes. Non-nullable must have a Bad StatusCode
+     * when no value is available. Only apply this check if no other
+     * error has occurred. */
+    if(retval == UA_STATUSCODE_GOOD &&
+       v->hasValue && UA_Variant_isEmpty(&v->value) &&
+       (node->head.nodeClass == UA_NODECLASS_VARIABLE ||
+        node->head.nodeClass == UA_NODECLASS_VARIABLETYPE) &&
+       !isNullableDataType(server, &node->variableNode.dataType)) {
+        v->hasValue = false;
+        v->hasStatus = true;
+        v->status = UA_STATUSCODE_BADWAITINGFORINITIALDATA;
     }
 
-    /* Don't "invent" source timestamps. But remove them when not required. */
-    if(timestampsToReturn == UA_TIMESTAMPSTORETURN_SERVER ||
-       timestampsToReturn == UA_TIMESTAMPSTORETURN_NEITHER) {
-        v->hasSourceTimestamp = false;
-        v->hasSourcePicoseconds = false;
-    }
+    addMissingTimestamps(server, v, timestampsToReturn, id);
 
     /* Are we done or is this an async read? */
     return (retval != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY);
@@ -628,7 +691,8 @@ readWithReadValue(UA_Server *server, const UA_NodeId *nodeId,
 
     /* Check the return value */
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    if(dv.hasStatus)
+    /* The status may be uncertain */
+    if(dv.hasStatus && dv.status >= UA_STATUSCODE_BAD)
         retval = dv.status;
     else if(!dv.hasValue)
         retval = UA_STATUSCODE_BADUNEXPECTEDERROR;
@@ -1464,6 +1528,16 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
                 UA_free(rangeptr->dimensions);
             return UA_STATUSCODE_BADTYPEMISMATCH;
         }
+    /* Reject writing a null/empty value for non-nullable data types.
+     * OPC UA Part 6, Table 1 defines which built-in types are non-nullable
+     * (Boolean, numeric, StatusCode, enumerations). Part 4, 7.11.5 states:
+     * "the Severity shall be BAD if the value is NULL for a non-nullable
+     * Datatype". Without this check the node is left in a state that returns
+     * BadWaitingForInitialData on subsequent reads. */
+    } else if(!isNullableDataType(server, &node->dataType)) {
+        if(rangeptr && rangeptr->dimensions != NULL)
+            UA_free(rangeptr->dimensions);
+        return UA_STATUSCODE_BADTYPEMISMATCH;
     }
 
     /* If no source timestamp is defined create one here.
@@ -1726,6 +1800,32 @@ copyAttributeIntoNode(UA_Server *server, UA_Session *session,
             if(!(accessLevel & (UA_ACCESSLEVELMASK_WRITE))) {
                 retval = UA_STATUSCODE_BADUSERACCESSDENIED;
                 break;
+            }
+            /* Writing the StatusCode requires the StatusWrite bit */
+            if(wvalue->value.hasStatus) {
+                accessLevel = getAccessLevel(server, session, &node->variableNode);
+                if(!(accessLevel & UA_ACCESSLEVELMASK_STATUSWRITE)) {
+                    retval = UA_STATUSCODE_BADWRITENOTSUPPORTED;
+                    break;
+                }
+                accessLevel = getUserAccessLevel(server, session, &node->variableNode);
+                if(!(accessLevel & UA_ACCESSLEVELMASK_STATUSWRITE)) {
+                    retval = UA_STATUSCODE_BADUSERACCESSDENIED;
+                    break;
+                }
+            }
+            /* Writing the SourceTimestamp requires the TimestampWrite bit */
+            if(wvalue->value.hasSourceTimestamp) {
+                accessLevel = getAccessLevel(server, session, &node->variableNode);
+                if(!(accessLevel & UA_ACCESSLEVELMASK_TIMESTAMPWRITE)) {
+                    retval = UA_STATUSCODE_BADWRITENOTSUPPORTED;
+                    break;
+                }
+                accessLevel = getUserAccessLevel(server, session, &node->variableNode);
+                if(!(accessLevel & UA_ACCESSLEVELMASK_TIMESTAMPWRITE)) {
+                    retval = UA_STATUSCODE_BADUSERACCESSDENIED;
+                    break;
+                }
             }
         } else { /* UA_NODECLASS_VARIABLETYPE */
             CHECK_USERWRITEMASK(UA_WRITEMASK_VALUEFORVARIABLETYPE);

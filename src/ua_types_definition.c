@@ -16,6 +16,8 @@
 
 /* All descriptions begin with UA_DataTypeDescription */
 
+#ifdef UA_TYPES_STRUCTUREDESCRIPTION
+
 static UA_StatusCode
 fromDescription(UA_DataType *type, const UA_DataTypeDescription *descr) {
     memset(type, 0, sizeof(UA_DataType));
@@ -141,6 +143,11 @@ type_alignment(const UA_DataType *type) {
     return alignment[type->typeKind];
 }
 
+/* The functions below require StructureDescription, EnumDescription,
+ * and SimpleTypeDescription which are derived from UA_DataTypeDescription.
+ * They are available when UA_TYPES_STRUCTUREDESCRIPTION is defined
+ * (guarded by the #ifdef at the top of this file). */
+
 static UA_StatusCode
 UA_DataType_fromStructureDescription(UA_DataType *type,
                                      const UA_StructureDescription *descr,
@@ -172,7 +179,7 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
     /* Allocate the members array */
     type->members = (UA_DataTypeMember *)
         UA_calloc(sd->fieldsSize, sizeof(UA_DataTypeMember));
-    if(!type->members) {
+    if((sd->fieldsSize > 0) && !type->members) {
         UA_DataType_clear(type);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
@@ -320,7 +327,7 @@ UA_DataType_toStructureDescription(const UA_DataType *type,
     /* Allocate the fields */
     sd->fields = (UA_StructureField*)
         UA_calloc(type->membersSize, sizeof(UA_StructureField));
-    if(!sd->fields) {
+    if((type->membersSize > 0) && !sd->fields) {
         UA_StructureDescription_clear(descr);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
@@ -380,7 +387,7 @@ UA_DataType_fromEnumDescription(UA_DataType *type,
     /* Allocate the members array */
     type->members = (UA_DataTypeMember *)
         UA_calloc(descr->enumDefinition.fieldsSize, sizeof(UA_DataTypeMember));
-    if(!type->members) {
+    if((descr->enumDefinition.fieldsSize > 0) && !type->members) {
         UA_DataType_clear(type);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
@@ -414,7 +421,7 @@ UA_DataType_toEnumDescription(const UA_DataType *type,
     /* Allocate the enum fields */
     descr->enumDefinition.fields = (UA_EnumField*)
         UA_calloc(type->membersSize, sizeof(UA_EnumField));
-    if(!descr->enumDefinition.fields) {
+    if((type->membersSize > 0) && !descr->enumDefinition.fields) {
         UA_EnumDescription_clear(descr);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
@@ -538,3 +545,5 @@ UA_DataType_toDescription(const UA_DataType *type, UA_ExtensionObject *descr) {
     UA_ExtensionObject_setValue(descr, descr_data, descr_type);
     return UA_STATUSCODE_GOOD;
 }
+
+#endif /* UA_TYPES_STRUCTUREDESCRIPTION */

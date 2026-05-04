@@ -70,10 +70,21 @@ mkpath(char *dir, UA_MODE mode) {
 
     /* Before the actual target directory is created, the recursive call ensures
      * that all parent directories are created or already exist. */
-    mkpath(UA_dirname(tmp_dir), mode);
+    int retval = mkpath(UA_dirname(tmp_dir), mode);
     UA_free(tmp_dir);
 
-    return UA_mkdir(dir, mode);
+    if(retval != 0)
+        return retval;
+
+#ifdef UA_ARCHITECTURE_OUL
+    if(UA_mkdir(dir, mode) == 0)
+        return 0;
+#else // UA_ARCHITECTURE_OUL
+    if(UA_mkdir(dir, mode) == 0 || errno == EEXIST)
+        return 0;
+#endif // UA_ARCHITECTURE_OUL
+
+    return 1;
 }
 
 #ifdef UA_ARCHITECTURE_OUL
@@ -448,7 +459,8 @@ FileCertStore_setupStorePath(char *directory, char *rootDirectory,
     char path[UA_PATH_MAX] = {0};
     size_t pathSize = 0;
 
-    strncpy(path, rootDirectory, UA_PATH_MAX);
+    strncpy(path, rootDirectory, UA_PATH_MAX - 1);
+    path[UA_PATH_MAX - 1] = '\0';
 #ifdef UA_ARCHITECTURE_OUL
     pathSize = OUL_StringLength(path, UA_PATH_MAX);
 #else

@@ -712,6 +712,7 @@ UA_DiscoveryManager_clearServerOnNetwork(UA_DiscoveryManager *dm) {
             UA_free(currHash);
             currHash = nextHash;
         }
+        mdnsPrivateData.serverOnNetworkHash[i] = NULL;
     }
 
     return UA_STATUSCODE_GOOD;
@@ -1135,6 +1136,7 @@ UA_DiscoveryManager_stopMulticast(UA_DiscoveryManager *dm) {
 
 void
 UA_DiscoveryManager_clearMdns(UA_DiscoveryManager *dm) {
+    (void)dm;
     /* Clean up the serverOnNetwork list */
     serverOnNetwork *son, *son_tmp;
     LIST_FOREACH_SAFE(son, &mdnsPrivateData.serverOnNetwork, pointers, son_tmp) {
@@ -1154,6 +1156,7 @@ UA_DiscoveryManager_clearMdns(UA_DiscoveryManager *dm) {
             UA_free(currHash);
             currHash = nextHash;
         }
+        mdnsPrivateData.serverOnNetworkHash[i] = NULL;
     }
 
     /* Clean up mdns daemon */
