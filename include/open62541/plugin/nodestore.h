@@ -29,7 +29,6 @@ typedef struct UA_MonitoredItem UA_MonitoredItem;
  * sections are mainly for users that seek to understand the underlying
  * representation -- which is not directly accessible.
  *
-                                         const UA_QualifiedName *targetBrowseName,
  * ReferenceType Bitfield Representation
  * -------------------------------------
  * ReferenceTypes have an alternative represention as an index into a bitfield
@@ -295,10 +294,6 @@ struct UA_NodeHead {
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     UA_MonitoredItem *monitoredItems; /* MonitoredItems for Events and immediate
                                        * DataChanges (no sampling interval). */
-#endif
-#ifdef UA_ENABLE_ROLEPERMISSONS
-    size_t rolePermissionsSize;
-    UA_RolePermissionType *rolePermissions;
 #endif
 };
 

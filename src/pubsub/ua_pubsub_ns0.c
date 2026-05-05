@@ -994,7 +994,7 @@ addPubSubConnectionRepresentation(UA_Server *server, UA_PubSubConnection *connec
             UA_DataSource stateDataSource;
             stateDataSource.read = pubSubStateVariableDataSourceRead;
             stateDataSource.write = NULL;
-            retVal |= UA_Server_setVariableNode_callbackValueSource(server, stateNodeId, stateDataSource);
+            retVal |= UA_Server_setVariableNode_dataSource(server, stateNodeId, stateDataSource);
         }
     }
 
@@ -1203,8 +1203,8 @@ addDataSetReaderRepresentation(UA_Server *server, UA_DataSetReader *dataSetReade
     if(!UA_NodeId_isNull(&stateNodeId)) {
         UA_DataSource stateDataSource;
         stateDataSource.read = pubSubStateVariableDataSourceRead;
-        stateDataSource.write = NULL;
-        retVal |= UA_Server_setVariableNode_callbackValueSource(server, stateNodeId, stateDataSource);
+        stateDataSource.write = NULL; 
+        retVal |= UA_Server_setVariableNode_dataSource(server, stateNodeId, stateDataSource);
     }
 
     /* Update childNode with values from Publisher */
@@ -1688,7 +1688,7 @@ addWriterGroupRepresentation(UA_Server *server, UA_WriterGroup *writerGroup) {
         UA_DataSource stateDataSource;
         stateDataSource.read = pubSubStateVariableDataSourceRead;
         stateDataSource.write = NULL;
-        retVal |= UA_Server_setVariableNode_callbackValueSource(server, stateNodeId, stateDataSource);
+        retVal |= UA_Server_setVariableNode_dataSource(server, stateNodeId, stateDataSource);
     }
 
     UA_NodeId priorityNode =
@@ -1910,7 +1910,7 @@ addReaderGroupRepresentation(UA_Server *server, UA_ReaderGroup *readerGroup) {
     UA_DataSource stateDataSource;
     stateDataSource.read = pubSubStateVariableDataSourceRead;
     stateDataSource.write = NULL;
-    retVal |= UA_Server_setVariableNode_callbackValueSource(server, stateIdNode, stateDataSource);
+    retVal |= UA_Server_setVariableNode_dataSource(server, stateIdNode, stateDataSource);
 
     if(server->config.pubSubConfig.enableInformationModelMethods) {
         retVal |= addRef(server, readerGroup->head.identifier, UA_NS0ID(HASCOMPONENT),

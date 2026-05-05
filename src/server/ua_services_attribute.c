@@ -565,29 +565,8 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
 #endif
         break;
     }
-#ifdef UA_ENABLE_ROLEPERMISSONS
-    case UA_ATTRIBUTEID_ROLEPERMISSIONS: {
-        if(!server->config.accessControl.allowReadRolePermissions(
-                          server, &server->config.accessControl,
-                          session ? &session->sessionId : NULL,
-                          session ? session->sessionHandle : NULL,
-                          &node->head.nodeId, node->head.context)) {
-            retval = UA_STATUSCODE_BADUSERACCESSDENIED;
-            break;
-        }
-        retval = UA_Variant_setArrayCopy(&v->value, node->head.rolePermissions,
-                    node->head.rolePermissionsSize, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-        break;
-	}
-    case UA_ATTRIBUTEID_USERROLEPERMISSIONS: {
-        v->value = server->config.accessControl.getUserRolePermissions(
-                          server, &server->config.accessControl,
-                          session ? &session->sessionId : NULL,
-                          session ? session->sessionHandle : NULL,
-                          &node->head.nodeId, node->head.context);
-        break;
-	}
-#endif // UA_ENABLE_ROLEPERMISSONS
+    case UA_ATTRIBUTEID_ROLEPERMISSIONS:
+    case UA_ATTRIBUTEID_USERROLEPERMISSIONS:
     case UA_ATTRIBUTEID_ACCESSRESTRICTIONS:
         /* TODO: Add support for the attributes from the 1.04 spec */
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;

@@ -17,7 +17,9 @@
 char *
 _UA_dirname_minimal(char *path) {
     char *lastSlash = strrchr(path, '/');
-    *lastSlash = 0;
+    if(NULL != lastSlash) {
+        *lastSlash = 0;
+    }
     return path;
 }
 #endif /* UA_ARCHITECTURE_WIN32 */

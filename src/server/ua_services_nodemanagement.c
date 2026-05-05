@@ -1107,24 +1107,6 @@ addNode_addRefs(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
     return retval;
 }
 
-#ifdef UA_ENABLE_ROLEPERMISSONS
-static UA_StatusCode
-copyRolePermissionsContext(UA_Server *server, UA_Session *session,
-                           UA_Node *typeNode, void* context) {
-    UA_Node*      newNode   = (UA_Node*) context;
-    UA_StatusCode u32Status = UA_STATUSCODE_GOOD;
-
-    if(NULL != typeNode->head.rolePermissions) {
-        u32Status = UA_Array_copy(typeNode->head.rolePermissions, typeNode->head.rolePermissionsSize, (void**) &newNode->head.rolePermissions, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-        if(UA_STATUSCODE_GOOD == u32Status) {
-            newNode->head.rolePermissionsSize = typeNode->head.rolePermissionsSize;
-        }
-    }
-
-    return u32Status;
-}
-#endif // UA_ENABLE_ROLEPERMISSONS
-
 /* Create the node and add it to the nodestore. But don't typecheck and add
  * references so far */
 UA_StatusCode
@@ -1179,15 +1161,6 @@ addNode_raw(UA_Server *server, UA_Session *session, void *nodeContext,
     retval = UA_QualifiedName_copy(&item->browseName, &node->head.browseName);
     if(retval != UA_STATUSCODE_GOOD)
         goto create_error;
-
-#ifdef UA_ENABLE_ROLEPERMISSONS
-    if(!UA_NodeId_isNull(&item->typeDefinition.nodeId)){
-        retval = editNode(server, &server->adminSession, &item->typeDefinition.nodeId,
-                                    copyRolePermissionsContext, node);
-        if(retval != UA_STATUSCODE_GOOD)
-            goto create_error;
-    }
-#endif
 
     retval = UA_Node_setAttributes(node, item->nodeAttributes.content.decoded.data,
                                    item->nodeAttributes.content.decoded.type);

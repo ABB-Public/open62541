@@ -138,18 +138,6 @@ struct UA_AccessControl {
                                                       UA_DateTime endTimestamp,
                                                       bool isDeleteModified);
 #endif
-
-#ifdef UA_ENABLE_ROLEPERMISSONS
-    /* Allow read role permission attribute per node */
-    UA_Boolean (*allowReadRolePermissions)(UA_Server *server, UA_AccessControl *ac,
-                                           const UA_NodeId *sessionId, void *sessionContext,
-                                           const UA_NodeId *nodeId, void *nodeContext);
-
-    /* Get user role permissions */
-    UA_Variant (*getUserRolePermissions)(UA_Server *server, UA_AccessControl *ac,
-                                         const UA_NodeId *sessionId, void *sessionContext,
-                                         const UA_NodeId *nodeId, void *nodeContext);
-#endif
 };
 
 _UA_END_DECLS
