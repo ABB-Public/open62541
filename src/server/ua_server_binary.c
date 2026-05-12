@@ -115,9 +115,26 @@ deleteServerSecureChannel(UA_BinaryProtocolManager *bpm,
      *
      * First detach all Sessions from the SecureChannel. This also removes
      * outstanding Publish requests whose RequestId is valid only for the
-     * SecureChannel. */
-    while(channel->sessions)
-        UA_Session_detachFromSecureChannel(server, channel->sessions);
+     * SecureChannel.
+     *
+     * Non-activated sessions are removed immediately. Per Part 4 v1.05, §5.7.3
+     * (ActivateSession): "When the ActivateSession Service is called for the
+     * first time then the Server shall reject the request if the SecureChannel
+     * is not same as the one associated with the CreateSession request." Hence
+     * a session that was never activated cannot be activated on any other
+     * channel — once the creating channel is gone, it is permanently unusable.
+     *
+     * Already-activated sessions are only detached because "Subsequent calls to
+     * ActivateSession may be associated with different SecureChannels", allowing
+     * session transfer to a new channel until the session times out. */
+    while(channel->sessions) {
+        UA_Session *session = channel->sessions;
+        if(!session->activated) {
+            UA_Session_remove(server, session, UA_SHUTDOWNREASON_ABORT);
+        } else {
+            UA_Session_detachFromSecureChannel(server, session);
+        }
+    }
 
     /* Detach the channel from the server list */
     TAILQ_REMOVE(&server->channels, channel, serverEntry);
@@ -1352,7 +1369,7 @@ UA_BinaryProtocolManager_start(UA_ServerComponent *sc, UA_Server *server) {
     UA_BinaryProtocolManager *bpm = (UA_BinaryProtocolManager*)sc;
 
     UA_ServerConfig *config = &server->config;
-    
+
     UA_StatusCode retVal =
         addRepeatedCallback(server, secureChannelHouseKeeping,
                             bpm, 1000.0, &bpm->houseKeepingCallbackId);
