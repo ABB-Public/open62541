@@ -647,7 +647,7 @@ UA_PubSubConnection_connectUDP(UA_PubSubManager *psm, UA_PubSubConnection *c,
     UA_Boolean listen = true;
     UA_Boolean reuse = true;
     UA_Boolean loopback = true;
-    UA_KeyValuePair kvp[7];
+    UA_KeyValuePair kvp[8];
     UA_KeyValueMap kvm = {5, kvp};
     kvp[0].key = UA_QUALIFIEDNAME(0, "port");
     UA_Variant_setScalar(&kvp[0].value, &port, &UA_TYPES[UA_TYPES_UINT16]);
@@ -670,6 +670,15 @@ UA_PubSubConnection_connectUDP(UA_PubSubManager *psm, UA_PubSubConnection *c,
         kvp[kvm.mapSize].key = UA_QUALIFIEDNAME(0, "interface");
         UA_Variant_setScalar(&kvp[kvm.mapSize].value, &addressUrl->networkInterface,
                              &UA_TYPES[UA_TYPES_STRING]);
+        kvm.mapSize++;
+    }
+
+    /* Forward multicastAddrList from connectionProperties if set */
+    const UA_Variant *mcastList = UA_KeyValueMap_get(
+        &c->config.connectionProperties, UA_QUALIFIEDNAME(0, "multicastAddrList"));
+    if(mcastList) {
+        kvp[kvm.mapSize].key = UA_QUALIFIEDNAME(0, "multicastAddrList");
+        kvp[kvm.mapSize].value = *mcastList;
         kvm.mapSize++;
     }
 
