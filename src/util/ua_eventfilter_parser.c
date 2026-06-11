@@ -121,10 +121,18 @@ append_operand(Operand *op, Operand *on) {
     optr->childrenSize++;
 }
 
+/* Maximum recursion depth for markPrinted to prevent stack exhaustion via
+ * deeply nested operator trees. */
+#define UA_EVENTFILTER_MAX_DEPTH 512
+
 /* Count the number of elements for the filter. Mark all required elements that
  * appear in the hierarchy from the top element. */
 static size_t
-markPrinted(EFParseContext *ctx, Operand *top, UA_StatusCode *res) {
+markPrinted(EFParseContext *ctx, Operand *top, UA_StatusCode *res, size_t depth) {
+    if(depth >= UA_EVENTFILTER_MAX_DEPTH) {
+        *res |= UA_STATUSCODE_BADINTERNALERROR;
+        return 0;
+    }
     top = resolveOperandRef(ctx, top, 0);
     if(!top) {
         *res |= UA_STATUSCODE_BADINTERNALERROR;
@@ -137,7 +145,7 @@ markPrinted(EFParseContext *ctx, Operand *top, UA_StatusCode *res) {
     top->operand.op.required = true;
     size_t count = 1;
     for(size_t i = 0; i < top->operand.op.childrenSize; i++)
-        count += markPrinted(ctx, top->operand.op.children[i], res);
+        count += markPrinted(ctx, top->operand.op.children[i], res, depth + 1);
     return count;
 }
 
@@ -257,7 +265,7 @@ create_filter(EFParseContext *ctx, UA_EventFilter *filter) {
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
-    size_t count = markPrinted(ctx, top, &res); /* Count relevant filter elements */
+    size_t count = markPrinted(ctx, top, &res, 0); /* Count relevant filter elements */
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
