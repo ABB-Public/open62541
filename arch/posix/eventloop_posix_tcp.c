@@ -9,6 +9,10 @@
 #include "open62541/types.h"
 #include "eventloop_posix.h"
 
+#ifdef UA_ARCHITECTURE_OUL
+#include <oul.pf.h>
+#endif // UA_ARCHITECTURE_OUL
+
 #if defined(UA_ARCHITECTURE_POSIX) && !defined(UA_ARCHITECTURE_LWIP) || defined(UA_ARCHITECTURE_WIN32) || defined(UA_ARCHITECTURE_OUL)
 
 /* Configuration parameters */
@@ -613,6 +617,22 @@ TCP_registerListenSocket(UA_POSIXConnectionManager *pcm, UA_ADDRINFO *ai,
         UA_close(listenSocket);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
+
+#ifdef UA_ARCHITECTURE_OUL
+    /* Bind socket to interface */
+    const char** ifnames = OUL_PF_NetInterfacesGet();
+    if(NULL != ifnames) {
+        size_t ifidx = 0;
+        while(NULL != ifnames[ifidx]) {
+            if(UA_bindtodevice(listenSocket, ifnames[ifidx])) {
+                UA_LOG_WARNING(el->eventLoop.logger, UA_LOGCATEGORY_NETWORK,
+                       "TCP %u\t| Bind to dev '%s' failed", ifnames[ifidx]);
+            }
+            ifidx++;
+        }
+        OUL_PF_NetInterfacesFree(ifnames);
+    }
+#endif // UA_ARCHITECTURE_OUL
 
     /* Bind socket to address */
     UA_RESET_ERRNO;
