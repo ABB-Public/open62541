@@ -460,7 +460,11 @@ FileCertStore_createPkiDirectory(UA_CertificateGroup *certGroup, const UA_String
         return UA_STATUSCODE_BADINTERNALERROR;
 
     memcpy(rootDirectory, directory.data, directory.length);
+#ifdef UA_ARCHITECTURE_OUL
+    rootDirectorySize = OUL_StringLength(rootDirectory, UA_PATH_MAX);
+#else
     rootDirectorySize = strnlen(rootDirectory, UA_PATH_MAX);
+#endif // UA_ARCHITECTURE_OUL
 
     /* Add Certificate Group Id */
     UA_NodeId applCertGroup =
@@ -483,7 +487,11 @@ FileCertStore_createPkiDirectory(UA_CertificateGroup *certGroup, const UA_String
         strncpy(&rootDirectory[rootDirectorySize], (char *)nodeIdStr.data, UA_PATH_MAX - rootDirectorySize);
         UA_String_clear(&nodeIdStr);
     }
+#ifdef UA_ARCHITECTURE_OUL
+    rootDirectorySize = OUL_StringLength(rootDirectory, UA_PATH_MAX);
+#else
     rootDirectorySize = strnlen(rootDirectory, UA_PATH_MAX);
+#endif // UA_ARCHITECTURE_OUL
 
     context->rootFolder = UA_STRING_ALLOC(rootDirectory);
 
