@@ -1394,7 +1394,6 @@ START_TEST(Server_transferSubscription_sendInitialValues) {
     unlockServer(server);
 } END_TEST
 
-
 START_TEST(Server_createSubscription_notificationCallback) {
     UA_ServerConfig *config = UA_Server_getConfig(server);
 
@@ -1426,6 +1425,327 @@ START_TEST(Server_createSubscription_notificationCallback) {
     config->subscriptionNotificationCallback = NULL;
     UA_CreateSubscriptionResponse_clear(&response);
 } END_TEST
+
+/* Override hook: allow transfer of a detached subscription only when the new
+ * session authenticates as the expected user. */
+static const char *recoverOverrideExpectedUser = NULL;
+static UA_Boolean
+allowTransferSubscription_recoverOverride(UA_Server *server, UA_AccessControl *ac,
+                                         const UA_NodeId *oldSessionId,
+                                         void *oldSessionContext,
+                                         const UA_NodeId *newSessionId,
+                                         void *newSessionContext) {
+    /* Detached subscription: oldSessionId is null/zero after session timeout. */
+    if(oldSessionId && oldSessionId->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+
+    UA_Variant newUserId;
+    UA_Variant_init(&newUserId);
+    UA_Server_getSessionAttribute(server, newSessionId,
+                                  UA_QUALIFIEDNAME(0, "clientUserId"),
+                                  &newUserId);
+    UA_Boolean result = false;
+    if(newUserId.type == &UA_TYPES[UA_TYPES_STRING] &&
+       recoverOverrideExpectedUser != NULL) {
+        UA_String *uid = (UA_String*)newUserId.data;
+        UA_String expected = UA_STRING((char*)(uintptr_t)recoverOverrideExpectedUser);
+        if(UA_String_equal(uid, &expected))
+            result = true;
+    }
+    UA_Variant_clear(&newUserId);
+    return result;
+}
+
+START_TEST(Server_subscriptionSurvivesSessionTimeoutButIsNotTransferable) {
+    /* Authenticated user to allow transfer */
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("testuser");
+    unlockServer(server);
+
+    createSubscription();
+    createMonitoredItem();
+
+    /* Subscription exists */
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+
+    /* Force session timeout */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    /* Subscription survives in server-wide list, detached */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+
+    /* Default policy denies transfer of a detached subscription even when the
+     * new session authenticates as the same user. */
+    UA_Session *session2 = createAuthenticatedSession("testuser");
+
+    UA_TransferSubscriptionsRequest transferRequest;
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse transferResponse;
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, session2, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode,
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Subscription still detached; teardown() reaps it. */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+
+    lockServer(server);
+    UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+
+    createSession();
+}END_TEST
+
+/* Companion to the previous test: a custom allowTransferSubscription hook
+ * re-enables transfer of a detached subscription for the same user. Documents
+ * that the default policy can be overridden for this scenario. */
+START_TEST(Server_subscriptionRecoverableWithOverride) {
+    /* Install override; restore the previous hook at the end. */
+    UA_AccessControl *ac = &server->config.accessControl;
+    UA_Boolean (*prevHook)(UA_Server *, UA_AccessControl *,
+                           const UA_NodeId *, void *,
+                           const UA_NodeId *, void *) = ac->allowTransferSubscription;
+    ac->allowTransferSubscription = allowTransferSubscription_recoverOverride;
+    recoverOverrideExpectedUser = "testuser";
+
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("testuser");
+    unlockServer(server);
+
+    createSubscription();
+    createMonitoredItem();
+
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+
+    /* Force session timeout */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    /* Subscription detached */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+
+    /* Override allows the same-user session to reclaim the detached subscription. */
+    UA_Session *session2 = createAuthenticatedSession("testuser");
+
+    UA_TransferSubscriptionsRequest transferRequest;
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse transferResponse;
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, session2, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode, UA_STATUSCODE_GOOD);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Re-attached to the new session */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, session2);
+
+    /* Restore hook before cleanup so other tests see the default policy. */
+    ac->allowTransferSubscription = prevHook;
+    recoverOverrideExpectedUser = NULL;
+
+    /* Cleanup */
+    UA_DeleteSubscriptionsRequest delRequest;
+    UA_DeleteSubscriptionsRequest_init(&delRequest);
+    delRequest.subscriptionIdsSize = 1;
+    delRequest.subscriptionIds = &subscriptionId;
+
+    UA_DeleteSubscriptionsResponse delResponse;
+    UA_DeleteSubscriptionsResponse_init(&delResponse);
+
+    lockServer(server);
+    Service_DeleteSubscriptions(server, session2, &delRequest, &delResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(delResponse.resultsSize, 1);
+    ck_assert_uint_eq(delResponse.results[0], UA_STATUSCODE_GOOD);
+    UA_DeleteSubscriptionsResponse_clear(&delResponse);
+
+    lockServer(server);
+    UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+
+    createSession();
+}END_TEST
+
+/* DataSource nodes with SamplingInterval=0 must use PUBLISH (periodic) sampling,
+ * not EVENT (backpointer) sampling, because they are never written via the Write
+ * service; tested with Server/ServerStatus/CurrentTime (i=2258). */
+START_TEST(Server_dataSourceSamplingIntervalZero) {
+    /* Create a subscription */
+    UA_CreateSubscriptionRequest subRequest;
+    UA_CreateSubscriptionRequest_init(&subRequest);
+    subRequest.publishingEnabled = UA_TRUE;
+    subRequest.requestedPublishingInterval = defaultRequestedPublishingInterval;
+
+    UA_CreateSubscriptionResponse subResponse;
+    UA_CreateSubscriptionResponse_init(&subResponse);
+
+    lockServer(server);
+    Service_CreateSubscription(server, session, &subRequest, &subResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(subResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    UA_UInt32 localSubId = subResponse.subscriptionId;
+    UA_Double publishingInterval = subResponse.revisedPublishingInterval;
+    UA_CreateSubscriptionResponse_clear(&subResponse);
+
+    /* Create a MonitoredItem on Server/ServerStatus/CurrentTime (i=2258)
+     * with SamplingInterval=0 */
+    UA_CreateMonitoredItemsRequest mrequest;
+    UA_CreateMonitoredItemsRequest_init(&mrequest);
+    mrequest.subscriptionId = localSubId;
+    mrequest.timestampsToReturn = UA_TIMESTAMPSTORETURN_BOTH;
+
+    UA_MonitoredItemCreateRequest item;
+    UA_MonitoredItemCreateRequest_init(&item);
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME);
+    rvi.attributeId = UA_ATTRIBUTEID_VALUE;
+    item.itemToMonitor = rvi;
+    item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+    UA_MonitoringParameters params;
+    UA_MonitoringParameters_init(&params);
+    params.samplingInterval = 0.0; /* key: SamplingInterval=0 on a DataSource node */
+    params.queueSize = 10;
+    params.discardOldest = UA_TRUE;
+    item.requestedParameters = params;
+    mrequest.itemsToCreateSize = 1;
+    mrequest.itemsToCreate = &item;
+
+    UA_CreateMonitoredItemsResponse mresponse;
+    UA_CreateMonitoredItemsResponse_init(&mresponse);
+
+    lockServer(server);
+    Service_CreateMonitoredItems(server, session, &mrequest, &mresponse);
+    unlockServer(server);
+    ck_assert_uint_eq(mresponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(mresponse.resultsSize, 1);
+    ck_assert_uint_eq(mresponse.results[0].statusCode, UA_STATUSCODE_GOOD);
+    UA_UInt32 localMonId = mresponse.results[0].monitoredItemId;
+    ck_assert_uint_gt(localMonId, 0);
+    /* The server may revise the sampling interval (e.g. to the publishing
+     * interval). Accept any non-negative value; the important structural
+     * assertion is that the item uses PUBLISH sampling, not EVENT sampling. */
+    ck_assert(mresponse.results[0].revisedSamplingInterval >= 0.0);
+
+    UA_MonitoredItemCreateRequest_clear(&item);
+    UA_CreateMonitoredItemsResponse_clear(&mresponse);
+
+    /* Locate the MonitoredItem and verify it is registered with PUBLISH sampling,
+     * not EVENT (backpointer) sampling. This is the structural assertion for the
+     * fix: a DataSource node with SamplingInterval=0 must land in
+     * sub->samplingMonitoredItems, not in the node's monitoredItems backpointer
+     * list. */
+    UA_Subscription *sub = NULL;
+    TAILQ_FOREACH(sub, &session->subscriptions, sessionListEntry) {
+        if(sub->subscriptionId == localSubId)
+            break;
+    }
+    ck_assert_ptr_ne(sub, NULL);
+
+    UA_MonitoredItem *mon = NULL;
+    UA_MonitoredItem *tmpMon;
+    LIST_FOREACH(tmpMon, &sub->samplingMonitoredItems, sampling.subscriptionSampling) {
+        if(tmpMon->monitoredItemId == localMonId) {
+            mon = tmpMon;
+            break;
+        }
+    }
+    ck_assert_ptr_ne(mon, NULL);
+    ck_assert_uint_eq(mon->samplingType, UA_MONITOREDITEMSAMPLINGTYPE_PUBLISH);
+
+    /* First publish cycle: capture the initial CurrentTime value */
+    UA_fakeSleep((UA_UInt32)publishingInterval + 1);
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_ge(mon->queueSize, 1);
+
+    UA_Notification *notification = TAILQ_LAST(&mon->queue, NotificationQueue);
+    ck_assert_ptr_ne(notification, NULL);
+    ck_assert(notification->data.dataChange.value.hasValue);
+    ck_assert(notification->data.dataChange.value.value.type == &UA_TYPES[UA_TYPES_DATETIME]);
+    UA_DateTime t1 = *(UA_DateTime*)notification->data.dataChange.value.value.data;
+    UA_UInt32 queueBefore = mon->queueSize;
+
+    /* Advance the test clock and trigger a second publish cycle.
+     * readCurrentTime() returns UA_DateTime_now(), which is controlled by
+     * UA_fakeSleep, so the value in the second cycle will differ from t1 and
+     * a new DataChangeNotification must be enqueued. */
+    UA_fakeSleep((UA_UInt32)publishingInterval + 1);
+    UA_Server_run_iterate(server, false);
+
+    ck_assert_uint_gt(mon->queueSize, queueBefore);
+    notification = TAILQ_LAST(&mon->queue, NotificationQueue);
+    ck_assert_ptr_ne(notification, NULL);
+    ck_assert(notification->data.dataChange.value.hasValue);
+    UA_DateTime t2 = *(UA_DateTime*)notification->data.dataChange.value.value.data;
+    ck_assert(t2 > t1);
+
+    /* Cleanup */
+    UA_DeleteSubscriptionsRequest delRequest;
+    UA_DeleteSubscriptionsRequest_init(&delRequest);
+    delRequest.subscriptionIdsSize = 1;
+    delRequest.subscriptionIds = &localSubId;
+
+    UA_DeleteSubscriptionsResponse delResponse;
+    UA_DeleteSubscriptionsResponse_init(&delResponse);
+
+    lockServer(server);
+    Service_DeleteSubscriptions(server, session, &delRequest, &delResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(delResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    UA_DeleteSubscriptionsResponse_clear(&delResponse);
+}
+END_TEST
 
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
 
@@ -1463,6 +1783,9 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_modifyMonitoredItems_invalidSubscription);
     tcase_add_test(tc_server, Server_deleteMonitoredItems_invalidSubscription);
     tcase_add_test(tc_server, Server_transferSubscription_sendInitialValues);
+    tcase_add_test(tc_server, Server_subscriptionSurvivesSessionTimeoutButIsNotTransferable);
+    tcase_add_test(tc_server, Server_subscriptionRecoverableWithOverride);
+    tcase_add_test(tc_server, Server_dataSourceSamplingIntervalZero);
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
     suite_add_tcase(s, tc_server);
 

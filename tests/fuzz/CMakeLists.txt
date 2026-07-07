@@ -28,20 +28,20 @@ remove_definitions(-std=c99 -Wmissing-prototypes -Wstrict-prototypes)
 set(CMAKE_CXX_STANDARD 11)
 
 if(NOT UA_BUILD_OSS_FUZZ)
-    if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
         MESSAGE(FATAL_ERROR "To build fuzzing, you need to use Clang as the compiler")
     endif()
 
     # oss-fuzz builds already include these flags
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -fsanitize=address")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O1 -fsanitize=address")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -fsanitize=address,undefined,fuzzer-no-link")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O1 -fsanitize=address,undefined,fuzzer-no-link")
     elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=address,undefined,fuzzer-no-link")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=address,undefined,fuzzer-no-link")
     else()
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope -fsanitize=fuzzer-no-link")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope -fsanitize=fuzzer-no-link")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=address,undefined,fuzzer-no-link")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=address,undefined,fuzzer-no-link")
     endif()
 
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
@@ -54,7 +54,7 @@ else()
 endif()
 
 list(APPEND LIBS "${open62541_LIBRARIES}")
-link_libraries("-fsanitize=fuzzer")
+link_libraries("-fsanitize=address,undefined,fuzzer")
 
 # the fuzzer test are built directly on the open62541 object files. so they can
 # access symbols that are hidden/not exported to the shared library
@@ -68,12 +68,17 @@ macro(add_fuzzer FUZZER_NAME FUZZER_SOURCE)
                                   $<TARGET_OBJECTS:open62541-plugins>)
     target_link_libraries(${FUZZER_NAME} ${LIBS})
     target_include_directories(${FUZZER_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/src/server)
-    target_include_directories(${FUZZER_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/deps/mdnsd)
+    target_include_directories(${FUZZER_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/src/client)
+    target_include_directories(${FUZZER_NAME} PRIVATE ${PROJECT_BINARY_DIR}/src_generated/mdnsd)
     assign_source_group(${FUZZER_SOURCE})
     list(APPEND FUZZER_TARGETS ${FUZZER_NAME})
 endmacro()
 
 # Add new fuzzers here
+add_fuzzer(fuzz_server_services fuzz_server_services.cc)
+add_fuzzer(fuzz_process_request fuzz_process_request.cc)
+add_fuzzer(fuzz_client fuzz_client.cc)
+add_fuzzer(fuzz_pubsub_connection_config fuzz_pubsub_connection_config.cc)
 add_fuzzer(fuzz_binary_message fuzz_binary_message.cc)
 add_fuzzer(fuzz_tcp_message fuzz_tcp_message.cc)
 add_fuzzer(fuzz_binary_decode fuzz_binary_decode.cc)
@@ -81,10 +86,11 @@ add_fuzzer(fuzz_src_ua_util fuzz_src_ua_util.cc)
 add_fuzzer(fuzz_attributeoperand fuzz_attributeoperand.cc)
 add_fuzzer(fuzz_parse_string fuzz_parse_string.cc)
 
-# Add fuzzer for mdns dependency. It's currently not fuzzed separately.
-# See also: https://github.com/google/oss-fuzz/pull/2928
-add_fuzzer(fuzz_mdns_message ${PROJECT_SOURCE_DIR}/deps/mdnsd/tests/fuzz/fuzz_mdns_message.cc)
-add_fuzzer(fuzz_mdns_xht ${PROJECT_SOURCE_DIR}/deps/mdnsd/tests/fuzz/fuzz_mdns_xht.cc)
+# Fuzzer for mdns dependency
+if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+    add_fuzzer(fuzz_mdns_message fuzz_mdns_message.cc)
+    add_fuzzer(fuzz_mdns_xht fuzz_mdns_xht.cc)
+endif()
 
 add_fuzzer(fuzz_base64_encode fuzz_base64_encode.cc)
 add_fuzzer(fuzz_base64_decode fuzz_base64_decode.cc)

@@ -57,49 +57,49 @@ _UA_BEGIN_DECLS
  * The figure below shows how the PubSub components are related.
  * The PubSub Tutorials have more examples about the API usage::
  *
- *  +--------+
- *  | Server |
- *  +--------+
- *    |  |
- *    |  |  +------------------------+
- *    |  +--> PubSubPublishedDataSet <----------+
- *    |     +------------------------+          |
- *    |       |                                 |
- *    |       |    +--------------+             |
- *    |       +----> DataSetField |             |
- *    |            +--------------+             |
- *    |                                         |
- *    |     +------------------+                |
- *    +-----> PubSubConnection |                |
- *          +------------------+                |
- *            |  |                              |
- *            |  |    +-------------+           |
- *            |  +----> WriterGroup |           |
- *            |       +-------------+           |
- *            |         |                       |
- *            |         |    +---------------+  |
- *            |         +----> DataSetWriter <--+
- *            |              +---------------+
- *            |
- *            |       +-------------+
- *            +-------> ReaderGroup |
- *                    +-------------+
- *                      |
- *                      |    +---------------+
- *                      +----> DataSetReader |
- *                           +---------------+
- *                             |
- *                             |    +-------------------+
- *                             +----> SubscribedDataSet |
- *                                  +-------------------+
- *                                    |
- *                                    |    +-------------------------+
- *                                    +----> TargetVariablesDataType |
- *                                    |    +-------------------------+
- *                                    |
- *                                    |    +---------------------------------+
- *                                    +----> SubscribedDataSetMirrorDataType |
- *                                         +---------------------------------+
+ *  ┌────────┐
+ *  │ Server │
+ *  └────────┘
+ *    │  │
+ *    │  │  ┌────────────────────────┐
+ *    │  └─>│ PubSubPublishedDataSet │<─────────┐
+ *    │     └────────────────────────┘          │
+ *    │       │                                 │
+ *    │       │    ┌──────────────┐             │
+ *    │       └───>│ DataSetField │             │
+ *    │            └──────────────┘             │
+ *    │                                         │
+ *    │     ┌──────────────────┐                │
+ *    └────>│ PubSubConnection │                │
+ *          └──────────────────┘                │
+ *            │  │                              │
+ *            │  │    ┌─────────────┐           │
+ *            │  └───>│ WriterGroup │           │
+ *            │       └─────────────┘           │
+ *            │         │                       │
+ *            │         │    ┌───────────────┐  │
+ *            │         └───>│ DataSetWriter │<─┘
+ *            │              └───────────────┘
+ *            │
+ *            │    ┌─────────────┐
+ *            └───>│ ReaderGroup │
+ *                 └─────────────┘
+ *                   │
+ *                   │    ┌───────────────┐
+ *                   └───>│ DataSetReader │
+ *                        └───────────────┘
+ *                          │
+ *                          │    ┌───────────────────┐
+ *                          └───>│ SubscribedDataSet │
+ *                               └───────────────────┘
+ *                                 │
+ *                                 │    ┌─────────────────────────┐
+ *                                 ├───>│ TargetVariablesDataType │
+ *                                 │    └─────────────────────────┘
+ *                                 │
+ *                                 │    ┌─────────────────────────────────┐
+ *                                 └───>│ SubscribedDataSetMirrorDataType │
+ *                                      └─────────────────────────────────┘
  *
  * PubSub Information Model Representation
  * ---------------------------------------
@@ -297,7 +297,7 @@ typedef struct {
 
 /**
  * PubSub Custom State Machine
- * -----------------
+ * ---------------------------
  * All PubSubComponents (Connection, Reader, ReaderGroup, ...) have a two
  * configuration items in common: A void context-pointer and a callback to
  * override the default state machine with a custom implementation.
