@@ -65,6 +65,9 @@ mkpath(char *dir, UA_MODE mode) {
             continue;
 
         *pos = '\0';
+#ifdef UA_ARCHITECTURE_OUL
+        if(path[0] != '\0' && !OUL_FS_DirectoryExists(path))
+#endif
         if(path[0] != '\0' && UA_mkdir(path, mode) != 0 && errno != EEXIST) {
             UA_free(path);
             return 1;
@@ -72,6 +75,9 @@ mkpath(char *dir, UA_MODE mode) {
         *pos = '/';
     }
 
+#ifdef UA_ARCHITECTURE_OUL
+    if(!OUL_FS_DirectoryExists(path))
+#endif
     if(UA_mkdir(path, mode) != 0 && errno != EEXIST) {
         UA_free(path);
         return 1;
