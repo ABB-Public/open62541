@@ -462,6 +462,10 @@ FileCertStore_createPkiDirectory(UA_CertificateGroup *certGroup, const UA_String
     memcpy(rootDirectory, directory.data, directory.length);
 #ifdef UA_ARCHITECTURE_OUL
     rootDirectorySize = OUL_StringLength(rootDirectory, UA_PATH_MAX);
+    while(rootDirectorySize > 0 && '/' == rootDirectory[rootDirectorySize - 1])
+    {
+        rootDirectorySize--;
+    }
 #else
     rootDirectorySize = strnlen(rootDirectory, UA_PATH_MAX);
 #endif // UA_ARCHITECTURE_OUL
