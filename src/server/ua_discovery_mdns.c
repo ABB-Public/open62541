@@ -1558,7 +1558,7 @@ UA_Discovery_removeRecord(UA_DiscoveryManager *dm, const UA_String servername,
 
 UA_StatusCode
 UA_Discovery_resendQueries() {
-    return mdnsd_resendQueries(mdnsPrivateData.mdnsDaemon) == 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+    return mdnsd_resend_queries(mdnsPrivateData.mdnsDaemon) == 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
 }
 
 #endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
