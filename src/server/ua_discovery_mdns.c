@@ -887,13 +887,13 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         return;
 
     /* Parse and process the message */
-    static struct message mm;
+    struct message mm;
     memset(&mm, 0, sizeof(struct message));
     int rr = message_parse(&mm, (unsigned char*)msg.data);
     if(rr == 0) { /* 0 = success in new mdnsd API */
         struct sockaddr_in *sa = (struct sockaddr_in*)infoptr->ai_addr;
-        mdnsd_in(mdnsPrivateData.mdnsDaemon, &mm, infoptr->ai_addr,
-                 (unsigned short)infoptr->ai_addrlen);
+        mdnsd_in(mdnsPrivateData.mdnsDaemon, &mm, sa->sin_addr, sa->sin_port);
+    }
     UA_freeaddrinfo(infoptr);
 }
 
@@ -1298,7 +1298,7 @@ UA_Discovery_recordExists(UA_DiscoveryManager *dm, const char* fullServiceDomain
         const mdns_answer_t *data = mdnsd_record_data(r);
         if(data->type == QTYPE_SRV &&
            data->name != NULL &&
-           strcasecmp(data->name, fullServiceDomain) == 0 &&
+           UA_strcasecmp(data->name, fullServiceDomain) == 0 &&
            (port == 0 || data->srv.port == port))
             return true;
         r = mdnsd_record_next(r);
