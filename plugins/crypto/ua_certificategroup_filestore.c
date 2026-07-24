@@ -66,9 +66,14 @@ mkpath(char *dir, UA_MODE mode) {
 
         *pos = '\0';
 #ifdef UA_ARCHITECTURE_OUL
-        if(path[0] != '\0' && !OUL_FS_DirectoryExists(path))
-#endif
+        if(path[0] == '\0') {
+            // empty path
+        } else if(OUL_FS_DirectoryExists(path)) {
+            // directory exists
+        } else if(UA_mkdir(path, mode) != 0) {
+#else // UA_ARCHITECTURE_OUL
         if(path[0] != '\0' && UA_mkdir(path, mode) != 0 && errno != EEXIST) {
+#endif // UA_ARCHITECTURE_OUL
             UA_free(path);
             return 1;
         }
@@ -76,9 +81,12 @@ mkpath(char *dir, UA_MODE mode) {
     }
 
 #ifdef UA_ARCHITECTURE_OUL
-    if(!OUL_FS_DirectoryExists(path))
-#endif
+    if(OUL_FS_DirectoryExists(path)) {
+        // directory exists
+    } else if(UA_mkdir(path, mode) != 0) {
+#else // UA_ARCHITECTURE_OUL
     if(UA_mkdir(path, mode) != 0 && errno != EEXIST) {
+#endif // UA_ARCHITECTURE_OUL
         UA_free(path);
         return 1;
     }
