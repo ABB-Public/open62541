@@ -65,7 +65,8 @@ UA_DiscoveryManager_clear(struct UA_ServerComponent *sc) {
         UA_RegisteredServer_clear(&rs->registeredServer);
         UA_free(rs);
     }
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+
+# ifdef UA_ENABLE_DISCOVERY_MULTICAST
     UA_DiscoveryManager_clearMdns(dm);
 # endif /* UA_ENABLE_DISCOVERY_MULTICAST */
 
