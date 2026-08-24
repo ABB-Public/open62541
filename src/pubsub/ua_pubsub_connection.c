@@ -643,6 +643,22 @@ UA_PubSubConnection_connectUDP(UA_PubSubManager *psm, UA_PubSubConnection *c,
     UA_Boolean receive_all =
         (address.length == 0) || UA_String_equal(&localhostAddr, &address);
 
+    /* Detect IPv4 multicast address (first octet 224-239). Multicast recv
+     * connections need the address in the kvm to join the multicast group.
+     * Unicast recv connections must not include the remote address*/
+    UA_Boolean bIsMulticastAddr = false;
+    if(address.length > 0) {
+        char szFirstOctet[4] = {0, 0, 0, 0};
+        size_t uxIdx = 0;
+        while(uxIdx < address.length && uxIdx < 3 && address.data[uxIdx] != (UA_Byte)'.') {
+            szFirstOctet[uxIdx] = (char)address.data[uxIdx];
+            uxIdx++;
+        }
+        int nFirstOctet = (int)strtol(szFirstOctet, NULL, 10);
+        bIsMulticastAddr = ((nFirstOctet >= 224) && (nFirstOctet <= 239));
+    }
+    receive_all = receive_all || !bIsMulticastAddr;
+
     /* Set up the connection parameters */
     UA_Boolean listen = true;
     UA_Boolean reuse = true;
@@ -697,6 +713,15 @@ UA_PubSubConnection_connectUDP(UA_PubSubManager *psm, UA_PubSubConnection *c,
         UA_LOG_INFO_PUBSUB(psm->logging, c,
                            "Localhost address - don't open UDP send connection");
         return UA_STATUSCODE_GOOD;
+    }
+
+    /* Add the remote address for the send channel. For unicast addresses this
+     * was intentionally omitted from the recv kvm to avoid binding to a remote
+     * address. For multicast the address is already present from the recv step. */
+    if(!bIsMulticastAddr) {
+        kvp[kvm.mapSize].key = UA_QUALIFIEDNAME(0, "address");
+        UA_Variant_setScalar(&kvp[kvm.mapSize].value, &address, &UA_TYPES[UA_TYPES_STRING]);
+        kvm.mapSize++;
     }
 
     /* Open a send connection */
