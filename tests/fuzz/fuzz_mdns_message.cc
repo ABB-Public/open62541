@@ -16,6 +16,7 @@ extern "C" {
 }
 
 unsigned char message_buf[MAX_PACKET_LEN];
+unsigned char message_workspace[MAX_PACKET_LEN];
 
 /*
 ** Main entry point.  The fuzzer invokes this function with each
@@ -29,7 +30,8 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     message_buf[size] = 0; /* zero terminate */
 
     struct message m;
-    memset(&m, 0, sizeof(struct message));
+    if(message_init(&m, message_workspace, sizeof(message_workspace)) != 0)
+        return 0;
 
     int parseResult = message_parse(&m, message_buf);
     if(!parseResult)
