@@ -923,6 +923,7 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
         if(rv != UA_STATUSCODE_GOOD)
             continue;
         memcpy(sendBuf.data, buf, sendBuf.length);
+        mdnsd_log_hex("Send Data:", buf, len);
         cm->sendWithConnection(cm, mdnsPrivateData.mdnsSendConnection,
                                &UA_KEYVALUEMAP_NULL, &sendBuf);
     }
