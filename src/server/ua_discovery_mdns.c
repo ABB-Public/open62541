@@ -889,9 +889,9 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
     mdnsd_log_hex("Got Data:", msg.data, msg.length);
 
     /* Parse and process the message */
-    struct message mm;
-    if(mdnsd_init_rx_message(mdnsPrivateData.mdnsDaemon, &mm) != 0)
-        return;
+    static struct message mm;
+    memset(&mm, 0, sizeof(struct message));
+
     int rr = message_parse(&mm, (unsigned char*)msg.data);
     if(rr == 0) { /* 0 = success in new mdnsd API */
         struct sockaddr_in *sa = (struct sockaddr_in*)infoptr->ai_addr;
@@ -909,9 +909,8 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
     struct in_addr ip;
     memset(&ip, 0, sizeof(struct in_addr));
 
-    struct message mm;
-    if(mdnsd_init_tx_message(mdnsPrivateData.mdnsDaemon, &mm) != 0)
-        return;
+    static struct message mm;
+    memset(&mm, 0, sizeof(struct message));
 
     unsigned short sport = 0;
     while(mdnsd_out(mdnsPrivateData.mdnsDaemon, &mm, &ip, &sport) > 0) {
@@ -1074,7 +1073,7 @@ discovery_createMulticastSocket(UA_DiscoveryManager *dm) {
 void
 UA_DiscoveryManager_startMulticast(UA_DiscoveryManager *dm) {
     if(!mdnsPrivateData.mdnsDaemon) {
-        mdnsPrivateData.mdnsDaemon = mdnsd_new(QCLASS_IN, MDNSD_DEFAULT_FRAME_SIZE);
+        mdnsPrivateData.mdnsDaemon = mdnsd_new(QCLASS_IN, 1000);
         mdnsd_register_receive_callback(mdnsPrivateData.mdnsDaemon, mdns_record_received, dm);
     }
 
