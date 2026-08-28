@@ -886,6 +886,8 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
     if(res != 0)
         return;
 
+    mdnsd_log_hex("Got Data:", msg.data, msg.length);
+
     /* Parse and process the message */
     struct message mm;
     if(mdnsd_init_rx_message(mdnsPrivateData.mdnsDaemon, &mm) != 0)
@@ -914,7 +916,7 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
     unsigned short sport = 0;
     while(mdnsd_out(mdnsPrivateData.mdnsDaemon, &mm, &ip, &sport) > 0) {
         int len = message_packet_len(&mm);
-        char* buf = (char*)message_packet(&mm);
+        unsigned char* buf = message_packet(&mm);
         if(len <= 0)
             continue;
         UA_ByteString sendBuf = UA_BYTESTRING_NULL;
@@ -923,7 +925,7 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
         if(rv != UA_STATUSCODE_GOOD)
             continue;
         memcpy(sendBuf.data, buf, sendBuf.length);
-        mdnsd_log_hex("Send Data:", buf, len);
+        mdnsd_log_hex("Send Data:", sendBuf.data, sendBuf.length);
         cm->sendWithConnection(cm, mdnsPrivateData.mdnsSendConnection,
                                &UA_KEYVALUEMAP_NULL, &sendBuf);
     }
