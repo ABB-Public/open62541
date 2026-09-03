@@ -887,6 +887,13 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         return;
 
     mdnsd_log_hex("Got Data:", msg.data, msg.length);
+#if MDNSD_O_PACKET_VALIDATE
+    if(!mdnsd_packet_validate(msg.data, msg.length))
+    {
+        char acBuffer[16];
+        OUL_LOG_WARNING("Received illegal frame from %.*s", address.length, address.data);
+    }
+#endif // MDNSD_O_PACKET_VALIDATE
 
     /* Parse and process the message */
     static struct message mm;
@@ -925,6 +932,12 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
             continue;
         memcpy(sendBuf.data, buf, sendBuf.length);
         mdnsd_log_hex("Send Data:", sendBuf.data, sendBuf.length);
+#if MDNSD_O_PACKET_VALIDATE
+        if(!mdnsd_packet_validate(msg.data, msg.length))
+        {
+            OUL_LOG_WARNING("Send illegal frame");
+        }
+#endif // MDNSD_O_PACKET_VALIDATE
         cm->sendWithConnection(cm, mdnsPrivateData.mdnsSendConnection,
                                &UA_KEYVALUEMAP_NULL, &sendBuf);
     }
