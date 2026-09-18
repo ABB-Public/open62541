@@ -305,12 +305,23 @@ UA_Client_getConfig(UA_Client *client) {
 
 #if UA_LOGLEVEL <= 300
 static const char *channelStateTexts[14] = {
-    "Fresh", "ReverseListening", "Connecting", "Connected", "ReverseConnected", "RHESent", "HELSent", "HELReceived", "ACKSent",
-    "AckReceived", "OPNSent", "Open", "Closing", "Closed"};
+    "Closed", "ReverseListening", "Connecting", "Connected", "ReverseConnected", "RHESent", "HELSent", "HELReceived", "ACKSent",
+    "AckReceived", "OPNSent", "Open", "Closing"};
 static const char *sessionStateTexts[6] =
     {"Closed", "CreateRequested", "Created",
      "ActivateRequested", "Activated", "Closing"};
 #endif
+
+void
+setConnectStatus(UA_Client *client, UA_StatusCode status) {
+    UA_LOCK_ASSERT(&client->clientMutex);
+
+    client->connectStatus = status;
+    if(status != UA_STATUSCODE_GOOD)
+        closeSecureChannel(client);
+
+    notifyClientState(client);
+}
 
 void
 notifyClientState(UA_Client *client) {
@@ -505,6 +516,7 @@ processMSGResponse(UA_Client *client, UA_UInt32 requestId,
     UA_DecodeBinaryOptions opt;
     memset(&opt, 0, sizeof(UA_DecodeBinaryOptions));
     opt.customTypes = config->customDataTypes;
+    opt.namespaceMapping = client->channel.namespaceMapping;
     retval = UA_decodeBinaryInternal(msg, &offset, response, responseType, &opt);
 
  process:
@@ -1486,8 +1498,8 @@ UA_Client_Service_queryFirst(UA_Client *client,
 UA_QueryNextResponse
 UA_Client_Service_queryNext(UA_Client *client, const UA_QueryNextRequest request) {
     UA_QueryNextResponse response;
-    __UA_Client_Service(client, &request, &UA_TYPES[UA_TYPES_QUERYFIRSTREQUEST],
-                        &response, &UA_TYPES[UA_TYPES_QUERYFIRSTRESPONSE]);
+    __UA_Client_Service(client, &request, &UA_TYPES[UA_TYPES_QUERYNEXTREQUEST],
+                        &response, &UA_TYPES[UA_TYPES_QUERYNEXTRESPONSE]);
     return response;
 }
 

@@ -276,9 +276,9 @@ TCP_connectionSocketCallback(UA_ConnectionManager *cm, TCP_FD *conn,
 
     /* Receive has failed */
     if(ret <= 0) {
-        if(UA_ERRNO == UA_INTERRUPTED ||
-           UA_ERRNO == UA_WOULDBLOCK ||
-           UA_ERRNO == UA_AGAIN)
+        if(ret < 0 && (UA_ERRNO == UA_INTERRUPTED ||
+                        UA_ERRNO == UA_WOULDBLOCK ||
+                        UA_ERRNO == UA_AGAIN))
             return; /* Temporary error on an non-blocking socket */
 
         /* Orderly shutdown of the socket */
@@ -872,7 +872,7 @@ TCP_sendWithConnection(UA_ConnectionManager *cm, uintptr_t connectionId,
     /* Send the full buffer. This may require several calls to send */
     size_t nWritten = 0;
     do {
-        int n = 0;
+        UA_SSIZE n = 0;
         do {
             UA_RESET_ERRNO;
             UA_LOG_DEBUG(cm->eventSource.eventLoop->logger, UA_LOGCATEGORY_NETWORK,

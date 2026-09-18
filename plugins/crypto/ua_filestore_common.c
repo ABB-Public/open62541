@@ -16,10 +16,12 @@
  * implementation working with correct input data. */
 char *
 _UA_dirname_minimal(char *path) {
+    if(path == NULL || *path == '\0')
+        return ".";
     char *lastSlash = strrchr(path, '/');
-    if(NULL != lastSlash) {
-        *lastSlash = 0;
-    }
+    if(lastSlash == NULL)
+        return ".";
+    *lastSlash = 0;
     return path;
 }
 #endif /* UA_ARCHITECTURE_WIN32 */
@@ -36,7 +38,12 @@ readFileToByteString(const char *const path, UA_ByteString *data) {
 
     /* Get the file length, allocate the data and read */
     UA_fseek(fp, 0, UA_SEEK_END);
-    UA_StatusCode retval = UA_ByteString_allocBuffer(data, (size_t)UA_ftell(fp));
+    long fileSize = UA_ftell(fp);
+    if(fileSize < 0) {
+        UA_fclose(fp);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    UA_StatusCode retval = UA_ByteString_allocBuffer(data, (size_t)fileSize);
     if(retval == UA_STATUSCODE_GOOD) {
         UA_fseek(fp, 0, UA_SEEK_SET);
         size_t read = UA_fread(data->data, sizeof(UA_Byte), data->length * sizeof(UA_Byte), fp);

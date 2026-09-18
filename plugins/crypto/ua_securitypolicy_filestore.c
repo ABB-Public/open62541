@@ -36,23 +36,13 @@ checkCertificateInFilestore(char *path, const UA_ByteString newCertificate) {
 
     struct UA_DIRENT *dirent;
     while((dirent = UA_readdir(dir)) != NULL) {
-#if defined(UA_ARCHITECTURE_OUL)
-        if(dirent->eType != UA_DT_REG)
-            continue;
-#else
         if(dirent->d_type != UA_DT_REG)
             continue;
-#endif
 
         /* Get filename to load */
         char filename[UA_FILENAME_MAX];
-#if defined(UA_ARCHITECTURE_OUL)
-        if(mp_snprintf(filename, UA_FILENAME_MAX, "%s/%s", path, dirent->acName) < 0)
-            return false;
-#else
         if(mp_snprintf(filename, UA_FILENAME_MAX, "%s/%s", path, dirent->d_name) < 0)
             return false;
-#endif
 
         /* Load data from file */
         if(fileData.length > 0)

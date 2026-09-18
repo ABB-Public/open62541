@@ -10,12 +10,12 @@
 #include "ua_discovery.h"
 #include "ua_server_internal.h"
 #include <stdlib.h>
-#include <libmdnsd/mdnsd.h>
-#if  defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
+#include "mdnsd.h"
+#if defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD) || defined(UA_ENABLE_DISCOVERY_MULTICAST_STANDALONE)
 
 #ifndef UA_ENABLE_AMALGAMATION
-#include <libmdnsd/xht.h>
-#include <libmdnsd/sdtxt.h>
+#include "xht.h"
+#include "sdtxt.h"
 #endif
 
 #ifdef UA_ARCHITECTURE_WIN32
@@ -537,7 +537,7 @@ mdns_create_txt(UA_DiscoveryManager *dm, const char *fullServiceDomain, const ch
     xht_free(h);
     mdnsd_set_raw(mdnsPrivateData.mdnsDaemon, r, (char *) packet,
                   (unsigned short) txtRecordLength);
-    MDNSD_free(packet);
+    UA_free(packet);
 }
 
 static mdns_record_t *
@@ -886,12 +886,24 @@ MulticastDiscoveryCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
     if(res != 0)
         return;
 
+    mdnsd_log_hex("Got Data:", msg.data, msg.length);
+#if MDNSD_O_PACKET_VALIDATE
+    if(!mdnsd_packet_validate(msg.data, msg.length))
+    {
+        char acBuffer[16];
+        OUL_LOG_WARNING("Received illegal frame from %.*s", address.length, address.data);
+    }
+#endif // MDNSD_O_PACKET_VALIDATE
+
     /* Parse and process the message */
     static struct message mm;
     memset(&mm, 0, sizeof(struct message));
-    UA_Boolean rr = message_parse(&mm, (unsigned char*)msg.data, msg.length);
-    if(rr)
-        mdnsd_in(mdnsPrivateData.mdnsDaemon, &mm, infoptr->ai_addr, *port);
+
+    int rr = message_parse(&mm, (unsigned char*)msg.data);
+    if(rr == 0) { /* 0 = success in new mdnsd API */
+        struct sockaddr_in *sa = (struct sockaddr_in*)infoptr->ai_addr;
+        mdnsd_in(mdnsPrivateData.mdnsDaemon, &mm, sa->sin_addr, sa->sin_port);
+    }
     UA_freeaddrinfo(infoptr);
 }
 
@@ -901,17 +913,16 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
     if(!dm->cm || mdnsPrivateData.mdnsSendConnection == 0)
         return;
 
-    struct sockaddr ip;
-    memset(&ip, 0, sizeof(struct sockaddr));
-    ip.sa_family = AF_INET; /* Ipv4 */
+    struct in_addr ip;
+    memset(&ip, 0, sizeof(struct in_addr));
 
-    struct message mm;
+    static struct message mm;
     memset(&mm, 0, sizeof(struct message));
 
     unsigned short sport = 0;
     while(mdnsd_out(mdnsPrivateData.mdnsDaemon, &mm, &ip, &sport) > 0) {
         int len = message_packet_len(&mm);
-        char* buf = (char*)message_packet(&mm);
+        unsigned char* buf = message_packet(&mm);
         if(len <= 0)
             continue;
         UA_ByteString sendBuf = UA_BYTESTRING_NULL;
@@ -920,6 +931,13 @@ UA_DiscoveryManager_sendMulticastMessages(UA_DiscoveryManager *dm) {
         if(rv != UA_STATUSCODE_GOOD)
             continue;
         memcpy(sendBuf.data, buf, sendBuf.length);
+        mdnsd_log_hex("Send Data:", sendBuf.data, sendBuf.length);
+#if MDNSD_O_PACKET_VALIDATE
+        if(!mdnsd_packet_validate(msg.data, msg.length))
+        {
+            OUL_LOG_WARNING("Send illegal frame");
+        }
+#endif // MDNSD_O_PACKET_VALIDATE
         cm->sendWithConnection(cm, mdnsPrivateData.mdnsSendConnection,
                                &UA_KEYVALUEMAP_NULL, &sendBuf);
     }
@@ -1295,7 +1313,10 @@ UA_Discovery_recordExists(UA_DiscoveryManager *dm, const char* fullServiceDomain
     mdns_record_t *r  = mdnsd_get_published(mdnsPrivateData.mdnsDaemon, fullServiceDomain);
     while(r) {
         const mdns_answer_t *data = mdnsd_record_data(r);
-        if(data->type == QTYPE_SRV && (port == 0 || data->srv.port == port))
+        if(data->type == QTYPE_SRV &&
+           data->name != NULL &&
+           UA_strcasecmp(data->name, fullServiceDomain) == 0 &&
+           (port == 0 || data->srv.port == port))
             return true;
         r = mdnsd_record_next(r);
     }
@@ -1554,7 +1575,7 @@ UA_Discovery_removeRecord(UA_DiscoveryManager *dm, const UA_String servername,
 
 UA_StatusCode
 UA_Discovery_resendQueries() {
-    return mdnsd_resendQueries(mdnsPrivateData.mdnsDaemon) == 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+    return mdnsd_resend_queries(mdnsPrivateData.mdnsDaemon) == 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
 }
 
 #endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */

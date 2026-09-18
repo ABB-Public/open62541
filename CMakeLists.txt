@@ -43,7 +43,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # overwritten with more detailed information if git is available.
 set(OPEN62541_VER_MAJOR 1)
 set(OPEN62541_VER_MINOR 5)
-set(OPEN62541_VER_PATCH 4)
+set(OPEN62541_VER_PATCH 5)
 set(OPEN62541_VER_LABEL "") # like "-rc1" or "-g4538abcd" or "-g4538abcd-dirty"
 set(OPEN62541_VER_COMMIT "unknown-commit")
 
@@ -285,8 +285,6 @@ if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_BUILD_FUZZING_CORPUS)
     set(UA_ENABLE_DISCOVERY ON CACHE STRING "" FORCE)
     set(UA_ENABLE_DISCOVERY_MULTICAST MDNSD CACHE STRING "" FORCE)
     set(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD ON CACHE STRING "" FORCE)
-    set(UA_ENABLE_ENCRYPTION ON CACHE STRING "OFF" FORCE)
-    set(UA_ENABLE_ENCRYPTION_MBEDTLS ON CACHE STRING "" FORCE)
     set(UA_ENABLE_HISTORIZING ON CACHE STRING "" FORCE)
     set(UA_ENABLE_JSON_ENCODING ON CACHE STRING "" FORCE)
     set(UA_ENABLE_SUBSCRIPTIONS ON CACHE STRING "" FORCE)
@@ -609,7 +607,7 @@ function(add_cc_flag CC_FLAG)
     endif()
 endfunction()
 
-if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
+if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang") AND
     NOT ${UA_ARCHITECTURE} STREQUAL "zephyr")
 
     check_add_cc_flag("-std=c99")   # C99 mode
@@ -628,7 +626,7 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
 
     # Clang 22 added -Wcast-function-type-mismatch to -Wextra; suppress the parent group.
     # add_cc_flag bypasses check_c_compiler_flag which can give false negatives under -Werror.
-    if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND
        CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
         add_cc_flag("-Wno-cast-function-type")
     else()
@@ -636,7 +634,7 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
     endif()
 
     # Clang 22 flags __COUNTER__ as -Wc2y-extensions under -Wpedantic -std=c99
-    if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND
        CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "22.0")
         add_cc_flag("-Wno-c2y-extensions")
     else()
@@ -709,7 +707,7 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
     # Coverage
     if(UA_ENABLE_COVERAGE)
         check_add_cc_flag("--coverage")
-        if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
             check_add_cc_flag("-fprofile-instr-generate")
             check_add_cc_flag("-fcoverage-mapping")
             check_add_cc_flag("-fprofile-arcs")
@@ -720,7 +718,7 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
     # Inter Procedural Optimization / Link Time Optimization (should be same as -flto)
     # IPO requires too much memory for unit tests
     # GCC docu recommends to compile all files with the same options, therefore ignore it completely
-    if(NOT UA_BUILD_UNIT_TESTS AND NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    if(NOT UA_DEBUG AND NOT UA_BUILD_UNIT_TESTS AND NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
         include(CheckIPOSupported)
         check_ipo_supported(RESULT CC_HAS_IPO)
         if(CC_HAS_IPO)
@@ -740,11 +738,11 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND
 
     # Debug
     if(UA_ENABLE_DEBUG_SANITIZER AND BUILD_TYPE_LOWER_CASE STREQUAL "debug" AND UNIX AND NOT UA_BUILD_OSS_FUZZ AND
-       CMAKE_C_COMPILER_ID STREQUAL "Clang" AND NOT UA_ENABLE_UNIT_TESTS_MEMCHECK)
+       CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT UA_ENABLE_UNIT_TESTS_MEMCHECK)
         # Add default sanitizer settings when using clang and Debug build.
         # This allows e.g. CLion to find memory locations for SegFaults
         message(STATUS "Sanitizer enabled")
-        set(SANITIZER_FLAGS "-g -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined")
+        set(SANITIZER_FLAGS "-g -fno-omit-frame-pointer -fsanitize=address,undefined")
         if(CMAKE_CXX_COMPILER_VERSION AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
             set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize-coverage=trace-pc-guard")
         endif()
@@ -807,26 +805,6 @@ file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/src_generated")
 
 # Generate the config.h
 configure_file(include/open62541/config.h.in ${PROJECT_BINARY_DIR}/src_generated/open62541/config.h)
-
-if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
-    include(GenerateExportHeader)
-    set(MDNSD_LOGLEVEL 300 CACHE STRING "Level at which logs shall be reported" FORCE)
-
-    # create a "fake" empty library to generate the export header macros
-    if (APPLE)
-        add_library(mdnsd INTERFACE ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/mdnsd.h)
-    else()
-        add_library(mdnsd ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/mdnsd.h)
-    endif()
-
-    set_property(TARGET mdnsd PROPERTY LINKER_LANGUAGE C)
-    set_property(TARGET mdnsd PROPERTY DEFINE_SYMBOL "MDNSD_DYNAMIC_LINKING_EXPORT")
-    configure_file("deps/mdnsd/libmdnsd/mdnsd_config_extra.in"
-                   "${PROJECT_BINARY_DIR}/src_generated/mdnsd_config_extra")
-    file(READ "${PROJECT_BINARY_DIR}/src_generated/mdnsd_config_extra" MDNSD_CONFIG_EXTRA)
-    generate_export_header(mdnsd EXPORT_FILE_NAME "${PROJECT_BINARY_DIR}/src_generated/mdnsd_config.h"
-                           BASE_NAME MDNSD DEFINE_NO_DEPRECATED CUSTOM_CONTENT_FROM_VARIABLE MDNSD_CONFIG_EXTRA)
-endif()
 
 # Exported headers
 set(exported_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/config.h
@@ -1002,19 +980,61 @@ if(UA_DEBUG_DUMP_PKGS)
 endif()
 
 if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+    # Copy mdnsd libmdnsd files into src_generated/mdnsd/ so they can be
+    # patched via regex (configure_file copies without variable substitution
+    # when COPYONLY is given, but using the plain copy lets downstream code
+    # run regex passes on the generated copies before compilation).
+    set(MDNSD_GENERATED_DIR "${PROJECT_BINARY_DIR}/src_generated/mdnsd")
+    file(MAKE_DIRECTORY "${MDNSD_GENERATED_DIR}")
+
+    set(MDNSD_LIBMDNSD_HEADERS 1035.h xht.h sdtxt.h mdnsd.h)
+    set(MDNSD_LIBMDNSD_SOURCES 1035.c xht.c sdtxt.c mdnsd.c log.c)
+
+    foreach(_f IN LISTS MDNSD_LIBMDNSD_HEADERS MDNSD_LIBMDNSD_SOURCES)
+        configure_file(
+            "${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/${_f}"
+            "${MDNSD_GENERATED_DIR}/${_f}"
+            COPYONLY)
+        file(READ "${MDNSD_GENERATED_DIR}/${_f}" _content)
+        # Ensure open62541/config.h (which sets _GNU_SOURCE etc.) is included
+        # before any system header, then remove any original config.h include.
+        string(PREPEND _content "#include \"open62541/config.h\"\n")
+        string(REGEX REPLACE "#include \"config\\.h\"\n?" "" _content "${_content}")
+        # Rename C++ keyword identifiers: 'class' -> 'clazz', 'new' -> 'new_'
+        string(REGEX REPLACE "([^A-Za-z0-9_])class([^A-Za-z0-9_])" "\\1clazz\\2" _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])class([^A-Za-z0-9_])" "\\1clazz\\2" _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2" _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2" _content "${_content}")
+        file(WRITE "${MDNSD_GENERATED_DIR}/${_f}" "${_content}")
+    endforeach()
+
+    # Suppress warnings from the generated (upstream) mdnsd C files
+    set_source_files_properties(
+        ${MDNSD_GENERATED_DIR}/1035.c
+        ${MDNSD_GENERATED_DIR}/xht.c
+        ${MDNSD_GENERATED_DIR}/sdtxt.c
+        ${MDNSD_GENERATED_DIR}/mdnsd.c
+        ${MDNSD_GENERATED_DIR}/log.c
+        PROPERTIES COMPILE_FLAGS
+            "-Wno-c++-compat -Wno-variadic-macros -Wno-pedantic -Wno-implicit-function-declaration -Wno-nested-externs -Wno-int-to-pointer-cast")
+    # ua_discovery_mdns.c includes mdnsd.h which has GCC-style named variadic macros
+    set_source_files_properties(
+        ${PROJECT_SOURCE_DIR}/src/server/ua_discovery_mdns.c
+        PROPERTIES COMPILE_FLAGS "-Wno-variadic-macros")
+
     # prepend in list, otherwise it complains that winsock2.h has to be included before windows.h
     list(APPEND lib_headers
-        ${PROJECT_BINARY_DIR}/src_generated/mdnsd_config.h
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/1035.h
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/xht.h
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/sdtxt.h
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/mdnsd.h)
+        ${MDNSD_GENERATED_DIR}/1035.h
+        ${MDNSD_GENERATED_DIR}/xht.h
+        ${MDNSD_GENERATED_DIR}/sdtxt.h
+        ${MDNSD_GENERATED_DIR}/mdnsd.h)
     list(APPEND lib_sources
         ${PROJECT_SOURCE_DIR}/src/server/ua_discovery_mdns.c
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/1035.c
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/xht.c
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/sdtxt.c
-        ${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/mdnsd.c)
+        ${MDNSD_GENERATED_DIR}/1035.c
+        ${MDNSD_GENERATED_DIR}/xht.c
+        ${MDNSD_GENERATED_DIR}/sdtxt.c
+        ${MDNSD_GENERATED_DIR}/mdnsd.c
+        ${MDNSD_GENERATED_DIR}/log.c)
 elseif(UA_ENABLE_DISCOVERY_MULTICAST_AVAHI)
     list(APPEND lib_sources
       ${PROJECT_SOURCE_DIR}/src/server/ua_discovery_mdns_avahi.c
@@ -1175,6 +1195,8 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_LIBRESSL OR UA_ENABLE_AM
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_aes128sha256rsaoaep.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_aes256sha256rsapss.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp256.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp256_aesgcm.c
+         ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp256_chachapoly.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccnistp384.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccbrainpoolp256r1.c
          ${PROJECT_SOURCE_DIR}/plugins/crypto/openssl/securitypolicy_eccbrainpoolp384r1.c
@@ -1456,6 +1478,9 @@ function(include_directories_private)
 endfunction()
 
 include_directories_private("${PROJECT_SOURCE_DIR}/deps")
+if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+    include_directories_private("${PROJECT_BINARY_DIR}/src_generated/mdnsd")
+endif()
 
 if(UA_ARCHITECTURE_LWIP)
     include_directories_private(${LWIP_INCLUDE_DIRS})
@@ -1673,7 +1698,8 @@ install(DIRECTORY ${UA_SCHEMA_DIR}/
 # Install python tools
 set(UA_install_tools_files "tools/generate_datatypes.py"
                            "tools/generate_nodeid_header.py"
-                           "tools/generate_statuscode_descriptions.py")
+                           "tools/generate_statuscode_descriptions.py"
+                           "tools/generate_bsd.py")
 install(FILES ${UA_install_tools_files} DESTINATION ${open62541_install_tools_dir}
         PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
 

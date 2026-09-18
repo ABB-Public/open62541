@@ -65,7 +65,8 @@ UA_DiscoveryManager_clear(struct UA_ServerComponent *sc) {
         UA_RegisteredServer_clear(&rs->registeredServer);
         UA_free(rs);
     }
-#ifdef UA_ENABLE_DISCOVERY_MULTICAST
+
+# ifdef UA_ENABLE_DISCOVERY_MULTICAST
     UA_DiscoveryManager_clearMdns(dm);
 # endif /* UA_ENABLE_DISCOVERY_MULTICAST */
 
@@ -174,6 +175,12 @@ UA_DiscoveryManager_stop(struct UA_ServerComponent *sc) {
         return;
 
     UA_DiscoveryManager *dm = (UA_DiscoveryManager*)sc;
+
+    /* Set STOPPING early so that CLOSING callbacks (fired by stopMulticast
+     * below) do not trigger UA_DiscoveryManager_startMulticast and re-open
+     * connections that would prevent the DM from reaching STOPPED. */
+    sc->state = UA_LIFECYCLESTATE_STOPPING;
+
     removeCallback(dm->sc.server, dm->discoveryCallbackId);
 
     /* Cancel all outstanding register requests */
@@ -275,6 +282,10 @@ registerAsyncResponse(UA_Client *client, void *userdata,
     UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
                    "%s failed with statuscode %s", regtype,
                    UA_StatusCode_name(response->responseHeader.serviceResult));
+
+    /* RegisterServer already failed. Do not retry indefinitely. */
+    if(!ar->register2)
+        goto done;
 
     /* Try RegisterServer next */
     ar->register2 = false;

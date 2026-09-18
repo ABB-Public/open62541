@@ -87,7 +87,7 @@ set(test_plugin_sources
 
 # Network replay tests currently require a Linux environment.
 # Also only do it for 64bit builds, as there is a bug in the Debian multi-arch installation.
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_FORCE_32BIT AND NOT UA_ARCHITECTURE_LWIP)
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_FORCE_32BIT)
     list(APPEND test_plugin_sources
                 ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_networklayers_pcap.c)
     list(APPEND LIBS pcap)
@@ -200,6 +200,9 @@ if(UA_ENABLE_JSON_ENCODING)
 
     configure_file(${CMAKE_SOURCE_DIR}/tests/server/server_json_config.json5 ${CMAKE_BINARY_DIR}/tests/server_json_config.json5 COPYONLY)
     ua_add_test(server/check_json_config.c)
+    if(UA_ENABLE_ENCRYPTION)
+        ua_add_test(server/check_json_config_pki.c)
+    endif()
 
     if(UA_ENABLE_PUBSUB)
         ua_add_test(pubsub/check_pubsub_encoding_json.c)
@@ -450,6 +453,7 @@ if(UA_ENABLE_ENCRYPTION_MBEDTLS)
     ua_add_test(encryption/check_encryption_basic128rsa15.c)
     ua_add_test(encryption/check_encryption_basic256.c)
     ua_add_test(encryption/check_encryption_basic256sha256.c)
+    ua_add_test(encryption/check_encryption_basic256sha256_with_config.c)
     ua_add_test(encryption/check_encryption_aes128sha256rsaoaep.c)
     ua_add_test(encryption/check_encryption_aes256sha256rsapss.c)
     ua_add_test(encryption/check_username_connect_none.c)
@@ -465,6 +469,7 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_LIBRESSL)
     ua_add_test(encryption/check_encryption_basic128rsa15.c)
     ua_add_test(encryption/check_encryption_basic256.c)
     ua_add_test(encryption/check_encryption_basic256sha256.c)
+    ua_add_test(encryption/check_encryption_basic256sha256_with_config.c)
     ua_add_test(encryption/check_encryption_aes128sha256rsaoaep.c)
     ua_add_test(encryption/check_encryption_aes256sha256rsapss.c)
     ua_add_test(encryption/check_encryption_key_password.c)
@@ -479,6 +484,13 @@ endif()
 if(UA_ENABLE_ENCRYPTION_OPENSSL OR
    (UA_ENABLE_ENCRYPTION_MBEDTLS AND MBEDTLS_VERSION_MAJOR GREATER_EQUAL 3))
     ua_add_test(encryption/check_encryption_eccnistp256.c)
+endif()
+
+# The AEAD ECC policies (AesGcm / ChaChaPoly) are implemented only in the
+# OpenSSL backend, so their tests are OpenSSL-only.
+if(UA_ENABLE_ENCRYPTION_OPENSSL)
+    ua_add_test(encryption/check_encryption_eccnistp256_aesgcm.c)
+    ua_add_test(encryption/check_encryption_eccnistp256_chachapoly.c)
 endif()
 
 if(UA_ENABLE_ENCRYPTION_OPENSSL OR
@@ -506,7 +518,7 @@ if(UA_NAMESPACE_ZERO STREQUAL "FULL")
 endif()
 
 # Only do the network replay test for 64bit builds, as there is a bug in the Debian multi-arch installation
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_ARCHITECTURE_LWIP AND NOT UA_FORCE_32BIT)
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_FORCE_32BIT)
     ua_add_test(network_replay/check_network_replay.c)
 endif()
 

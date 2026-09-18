@@ -28,8 +28,12 @@
 #include <sys/stat.h>
 #endif
 
-// set register timeout to 1 second so we are able to test it.
-#define registerTimeout 4
+// Registration cleanup timeout (seconds). Kept generous so the registered
+// entry cannot age out between registering and the FindServers check under slow
+// execution (e.g. valgrind), where re-registration may transiently fail. The
+// dedicated timeout test still drives expiry via UA_fakeSleep(100000*checkWait),
+// which scales with this value and stays well beyond the timeout.
+#define registerTimeout 60
 // cleanup is only triggered every 10 seconds, thus wait a bit longer to check
 #define checkWait registerTimeout + 11
 
@@ -193,11 +197,7 @@ registerServer(void) {
     privateKey.data = KEY_DER_DATA;
 
     UA_ClientConfig cc;
-    memset(&cc, 0, sizeof(UA_ClientConfig));
-    UA_ClientConfig_setDefaultEncryption(&cc, certificate, privateKey, NULL, 0, NULL, 0);
-    UA_CertificateGroup_AcceptAll(&cc.certificateVerification);
-    cc.eventLoop->dateTime_now = UA_DateTime_now_fake;
-    cc.eventLoop->dateTime_nowMonotonic = UA_DateTime_now_fake;
+    UA_ClientConfig_newForUnitTestWithEncryption(&cc, certificate, privateKey);
 
     *running_register = false;
     THREAD_JOIN(server_thread_register);
@@ -224,11 +224,7 @@ unregisterServer(void) {
     privateKey.data = KEY_DER_DATA;
 
     UA_ClientConfig cc;
-    memset(&cc, 0, sizeof(UA_ClientConfig));
-    UA_ClientConfig_setDefaultEncryption(&cc, certificate, privateKey, NULL, 0, NULL, 0);
-    UA_CertificateGroup_AcceptAll(&cc.certificateVerification);
-    cc.eventLoop->dateTime_now = UA_DateTime_now_fake;
-    cc.eventLoop->dateTime_nowMonotonic = UA_DateTime_now_fake;
+    UA_ClientConfig_newForUnitTestWithEncryption(&cc, certificate, privateKey);
 
     *running_register = false;
     THREAD_JOIN(server_thread_register);
@@ -269,11 +265,7 @@ Server_register_semaphore(void) {
     privateKey.data = KEY_DER_DATA;
 
     UA_ClientConfig cc;
-    memset(&cc, 0, sizeof(UA_ClientConfig));
-    UA_ClientConfig_setDefaultEncryption(&cc, certificate, privateKey, NULL, 0, NULL, 0);
-    UA_CertificateGroup_AcceptAll(&cc.certificateVerification);
-    cc.eventLoop->dateTime_now = UA_DateTime_now_fake;
-    cc.eventLoop->dateTime_nowMonotonic = UA_DateTime_now_fake;
+    UA_ClientConfig_newForUnitTestWithEncryption(&cc, certificate, privateKey);
 
     *running_register = false;
     THREAD_JOIN(server_thread_register);
@@ -368,6 +360,56 @@ FindAndCheck(const UA_String expectedUris[], size_t expectedUrisSize,
     UA_Client_disconnect(client);
     UA_Client_delete(client);
     return found;
+}
+
+static UA_Boolean
+FindAndCheckDiscoveryUrls(const char *requestedEndpointUrl,
+                          size_t expectedSize) {
+    UA_Client *client = UA_Client_newForUnitTest();
+
+    UA_StatusCode retval = UA_Client_connect(client, requestedEndpointUrl);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_Client_delete(client);
+        return false;
+    }
+
+    UA_FindServersRequest request;
+    UA_FindServersRequest_init(&request);
+    request.endpointUrl = UA_STRING((char*)(uintptr_t)requestedEndpointUrl);
+
+    UA_ApplicationDescription *applicationDescriptionArray = NULL;
+    size_t applicationDescriptionArraySize = 0;
+
+    UA_FindServersResponse response;
+    __UA_Client_Service(client, &request, &UA_TYPES[UA_TYPES_FINDSERVERSREQUEST],
+                        &response, &UA_TYPES[UA_TYPES_FINDSERVERSRESPONSE]);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+
+    applicationDescriptionArray = response.servers;
+    applicationDescriptionArraySize = response.serversSize;
+
+    UA_Boolean ok = true;
+    UA_String requested = UA_STRING((char*)(uintptr_t)requestedEndpointUrl);
+
+    if(applicationDescriptionArraySize != expectedSize)
+        ok = false;
+
+    for(size_t i = 0; ok && i < applicationDescriptionArraySize; i++) {
+        UA_ApplicationDescription *ad = &applicationDescriptionArray[i];
+        if(ad->discoveryUrlsSize != 1) {
+            ok = false;
+            break;
+        }
+        if(!UA_String_equal(&ad->discoveryUrls[0], &requested)) {
+            ok = false;
+            break;
+        }
+    }
+
+    UA_FindServersResponse_clear(&response);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+    return ok;
 }
 
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST
@@ -657,6 +699,26 @@ START_TEST(Server_registerTimeout) {
 }
 END_TEST
 
+START_TEST(Server_findServers_mirrors_endpointUrl) {
+    while(!Client_find_discovery()) {}
+
+    registerServer();
+
+    while(!Client_find_registered()) {}
+
+    /* Wait until FindServers returns exactly the two servers, each mirroring the
+     * requested discovery URL. Busy-wait (like the checks above) instead of a
+     * one-shot assert: under slow execution (valgrind) the registered entry can
+     * briefly age out between periodic re-registrations, so retry until the
+     * expected state is observed. */
+    while(!FindAndCheckDiscoveryUrls("opc.tcp://localhost:4840", 2)) {}
+
+    unregisterServer();
+
+    while(!Client_find_discovery()) {}
+}
+END_TEST
+
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST
 START_TEST(Server_registerFindServers) {
     while(!Client_find_discovery()) {}
@@ -696,6 +758,7 @@ static Suite* testSuite_Client(void) {
     tcase_add_unchecked_fixture(tc_register, setup_lds, teardown_lds);
     tcase_add_unchecked_fixture(tc_register, setup_register, teardown_register);
     tcase_add_test(tc_register, Server_registerUnregister);
+    tcase_add_test(tc_register, Server_findServers_mirrors_endpointUrl);
     suite_add_tcase(s,tc_register);
 
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST

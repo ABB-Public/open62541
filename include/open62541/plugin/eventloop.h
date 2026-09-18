@@ -462,7 +462,7 @@ struct UA_InterruptManager {
  * is provided. The configuration paramaters must be set before starting the
  * EventLoop.
  *
-#if defined(UA_ARCHITECTURE_POSIX) || defined(UA_ARCHITECTURE_WIN32)
+ * **Clock configuration (Linux and BSDs only)**
  *
  * 0:clock-source [int32]
  *    Clock source (default: CLOCK_REALTIME).
