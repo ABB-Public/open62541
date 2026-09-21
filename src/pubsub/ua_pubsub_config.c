@@ -481,8 +481,8 @@ createReaderGroup(UA_PubSubManager *psm,
 
 /* Creates TargetVariables or SubscribedDataSetMirror for a given DataSetReader */
 static UA_StatusCode
-addSubscribedDataSet(UA_PubSubManager *psm, const UA_NodeId dsReaderIdent,
-                     const UA_ExtensionObject *subscribedDataSet) {
+createSubscribedDataSet(UA_PubSubManager *psm, const UA_NodeId dsReaderIdent,
+                        const UA_ExtensionObject *subscribedDataSet) {
     UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     if(subscribedDataSet->content.decoded.type ==
@@ -497,7 +497,7 @@ addSubscribedDataSet(UA_PubSubManager *psm, const UA_NodeId dsReaderIdent,
                                                       targetVars->targetVariables);
         if(res != UA_STATUSCODE_GOOD) {
             UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
-                         "[UA_PubSubManager_addSubscribedDataSet] "
+                         "[UA_PubSubManager_createSubscribedDataSet] "
                          "create TargetVariables failed");
         }
         return res;
@@ -506,13 +506,13 @@ addSubscribedDataSet(UA_PubSubManager *psm, const UA_NodeId dsReaderIdent,
     if(subscribedDataSet->content.decoded.type ==
        &UA_TYPES[UA_TYPES_SUBSCRIBEDDATASETMIRRORDATATYPE]) {
         UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
-                     "[UA_PubSubManager_addSubscribedDataSet] "
+                     "[UA_PubSubManager_createSubscribedDataSet] "
                      "DataSetMirror is currently not supported");
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
 
     UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
-                 "[UA_PubSubManager_addSubscribedDataSet] "
+                 "[UA_PubSubManager_createSubscribedDataSet] "
                  "Invalid Type of SubscribedDataSet");
     return UA_STATUSCODE_BADINTERNALERROR;
 }
@@ -549,7 +549,7 @@ createDataSetReader(UA_PubSubManager *psm, const UA_DataSetReaderDataType *dsrPa
     }
 
     /* Create the SubscribedDataSet */
-    res = addSubscribedDataSet(psm, dsReaderIdent, &dsrParams->subscribedDataSet);
+    res = createSubscribedDataSet(psm, dsReaderIdent, &dsrParams->subscribedDataSet);
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
                      "[UA_PubSubManager_createDataSetReader] "
@@ -1095,12 +1095,14 @@ generatePubSubConfigurationDataType(UA_PubSubManager *psm,
     UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     UA_PubSubConfigurationDataType_init(configDT);
-    configDT->publishedDataSets = (UA_PublishedDataSetDataType*)
-        UA_calloc(psm->publishedDataSetsSize,
-                  sizeof(UA_PublishedDataSetDataType));
-    if(configDT->publishedDataSets == NULL)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
     configDT->publishedDataSetsSize = psm->publishedDataSetsSize;
+    if(configDT->publishedDataSetsSize > 0) {
+        configDT->publishedDataSets = (UA_PublishedDataSetDataType*)
+            UA_calloc(configDT->publishedDataSetsSize,
+                      sizeof(UA_PublishedDataSetDataType));
+        if(configDT->publishedDataSets == NULL)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
 
     UA_PublishedDataSet *pds;
     UA_UInt32 pdsIndex = 0;
@@ -1117,11 +1119,14 @@ generatePubSubConfigurationDataType(UA_PubSubManager *psm,
         pdsIndex++;
     }
 
-    configDT->connections = (UA_PubSubConnectionDataType*)
-        UA_calloc(psm->connectionsSize, sizeof(UA_PubSubConnectionDataType));
-    if(configDT->connections == NULL)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
     configDT->connectionsSize = psm->connectionsSize;
+    if(configDT->connectionsSize > 0) {
+        configDT->connections = (UA_PubSubConnectionDataType*)
+            UA_calloc(configDT->connectionsSize,
+                      sizeof(UA_PubSubConnectionDataType));
+        if(configDT->connections == NULL)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
 
     UA_UInt32 connectionIndex = 0;
     UA_PubSubConnection *connection;

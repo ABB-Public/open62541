@@ -25,6 +25,7 @@
 
 #include "ua_session.h"
 #include "../util/ua_util_internal.h"
+#include "ziptree.h"
 
 _UA_BEGIN_DECLS
 
@@ -122,8 +123,8 @@ typedef enum {
 
 struct UA_MonitoredItem {
     UA_DelayedCallback delayedFreePointers;
-    LIST_ENTRY(UA_MonitoredItem) listEntry; /* Linked list in the Subscription */
-    UA_Subscription *subscription;          /* Always non-NULL */
+    ZIP_ENTRY(UA_MonitoredItem) idTreeEntry; /* Index by Id */
+    UA_Subscription *subscription;           /* Always non-NULL */
     UA_UInt32 monitoredItemId;
 
     /* Status and Settings */
@@ -157,7 +158,9 @@ struct UA_MonitoredItem {
     UA_MonitoredItemSamplingType samplingType;
     union {
         UA_UInt64 callbackId;
-        UA_MonitoredItem *nodeListNext; /* Event-Based: Attached to Node */
+        LIST_ENTRY(UA_MonitoredItem) nodeListEntry; /* Event-Based: linked into
+                                                     * the Node's MonitoredItem
+                                                     * list */
         LIST_ENTRY(UA_MonitoredItem) subscriptionSampling; /* Linked to publish
                                                             * interval */
     } sampling;
@@ -176,10 +179,41 @@ struct UA_MonitoredItem {
                             * the queue size */
 };
 
+static UA_INLINE UA_Boolean
+UA_MonitoredItem_isDeleting(const UA_MonitoredItem *mon) {
+    return mon->delayedFreePointers.callback != NULL;
+}
+
 void UA_MonitoredItem_init(UA_MonitoredItem *mon);
-void UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon);
+void UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon,
+                             UA_Boolean notify);
 void UA_MonitoredItem_removeOverflowInfoBits(UA_MonitoredItem *mon);
 void UA_MonitoredItem_register(UA_Server *server, UA_MonitoredItem *mon);
+
+void
+notifyMonitoredItem(UA_Server *server, UA_MonitoredItem *mon,
+                    UA_ApplicationNotificationType type);
+
+typedef ZIP_HEAD(UA_MonitoredItemIdTree, UA_MonitoredItem) UA_MonitoredItemIdTree;
+
+static enum ZIP_CMP
+UA_MonitoredItemIdTree_cmp(const UA_UInt32 *a,
+                           const UA_UInt32 *b) {
+    if(*a < *b)
+        return ZIP_CMP_LESS;
+    if(*a > *b)
+        return ZIP_CMP_MORE;
+    return ZIP_CMP_EQ;
+}
+
+ZIP_FUNCTIONS(UA_MonitoredItemIdTree, UA_MonitoredItem, idTreeEntry,
+              UA_UInt32, monitoredItemId, UA_MonitoredItemIdTree_cmp)
+
+/* UA_NodeHead.monitoredItems is a bare UA_MonitoredItem* in the public
+ * nodestore.h, which is layout-compatible with this LIST_HEAD. The server runs
+ * the LIST_* macros over the per-node MonitoredItem list by casting the field's
+ * address to UA_MonitoredItemList*. */
+typedef LIST_HEAD(UA_MonitoredItemList, UA_MonitoredItem) UA_MonitoredItemList;
 
 /* Register sampling. Either by adding a repeated callback or by adding the
  * MonitoredItem to a linked list in the node. */
@@ -272,7 +306,7 @@ struct UA_Subscription {
 
     /* MonitoredItems */
     UA_UInt32 lastMonitoredItemId; /* increase the identifiers */
-    LIST_HEAD(, UA_MonitoredItem) monitoredItems;
+    UA_MonitoredItemIdTree monitoredItemsById;
     UA_UInt32 monitoredItemsSize;
 
     /* MonitoredItems that are sampled in every publish callback (with the
@@ -378,7 +412,7 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
 
 typedef struct {
     UA_Server *server;
-    UA_Session *session;
+    UA_Session *session; /* may be NULL if no session is attached. */
     UA_EventDescription ed; /* shallow copy */
     UA_EventFilter filter;  /* shallow copy */
 

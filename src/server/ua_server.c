@@ -193,6 +193,7 @@ UA_GDSTransaction_init(UA_GDSTransaction *transaction, UA_Server *server, const 
     UA_NodeId_copy(&sessionId, &transaction->sessionId);
     transaction->server = server;
     transaction->localCsrCertificate = csr;
+    transaction->applyChangesQueued = false;
 
     return UA_STATUSCODE_GOOD;
 }
@@ -570,8 +571,8 @@ UA_Server_init(UA_Server *server) {
 #endif
 
     /* Initialize namespace 0 */
-#ifdef UA_GENERATED_NAMESPACE_ZERO
-    /* Standard configuration: generate NS0 nodes at runtime */
+#if defined(UA_GENERATED_NAMESPACE_ZERO) || defined(UA_NAMESPACE_ZERO_MINIMAL)
+    /* Generate NS0 nodes at runtime or create the minimal NS0 */
     res = initNS0(server);
 #else
     /* NONE configuration: NS0 pre-loaded by external nodestore (e.g., ROM).
@@ -1181,7 +1182,7 @@ setServerLifecycleState(UA_Server *server, UA_LifecycleState state) {
     if(config->globalNotificationCallback || config->lifecycleNotificationCallback) {
         UA_ApplicationNotificationType nt = UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STARTED;
         switch(state) {
-        case UA_LIFECYCLESTATE_STOPPED: nt = UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPING; break;
+        case UA_LIFECYCLESTATE_STOPPED: nt = UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPED; break;
         case UA_LIFECYCLESTATE_STOPPING: nt = UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPING; break;
         default: break;
         }

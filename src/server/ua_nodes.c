@@ -577,7 +577,7 @@ UA_Node_copy(const UA_Node *src, UA_Node *dst) {
     dsthead->context = srchead->context;
     dsthead->constructed = srchead->constructed;
 #ifdef UA_ENABLE_SUBSCRIPTIONS
-    dsthead->monitoredItems = srchead->monitoredItems;
+    dsthead->monitoredItems = NULL;
 #endif
     if(retval != UA_STATUSCODE_GOOD) {
         UA_Node_clear(dst);
@@ -671,6 +671,24 @@ UA_Node_copy(const UA_Node *src, UA_Node *dst) {
         UA_Node_clear(dst);
 
     return retval;
+}
+
+void
+UA_Node_moveMonitoredItems(UA_Node *src, UA_Node *dst) {
+    if(src == dst)
+        return;
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+    UA_assert(dst->head.monitoredItems == NULL);
+    dst->head.monitoredItems = src->head.monitoredItems;
+    src->head.monitoredItems = NULL;
+    if(dst->head.monitoredItems) {
+        dst->head.monitoredItems->sampling.nodeListEntry.le_prev =
+            &dst->head.monitoredItems;
+    }
+#else
+    (void)src;
+    (void)dst;
+#endif
 }
 
 UA_Node *

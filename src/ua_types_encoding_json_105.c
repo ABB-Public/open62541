@@ -53,20 +53,31 @@ decodeJsonStructure(ParseCtx *ctx, void *dst, const UA_DataType *type);
 
 static status UA_INTERNAL_FUNC_ATTR_WARN_UNUSED_RESULT
 writeChar(CtxJson *ctx, char c) {
+    if(ctx->calcOnly) {
+        if((uintptr_t)ctx->pos >= (uintptr_t)ctx->end)
+            return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+        ctx->pos = (UA_Byte*)((uintptr_t)ctx->pos + 1u);
+        return UA_STATUSCODE_GOOD;
+    }
     if(ctx->pos >= ctx->end)
         return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
-    if(!ctx->calcOnly)
-        *ctx->pos = (UA_Byte)c;
-    ctx->pos++;
+    *ctx->pos++ = (UA_Byte)c;
     return UA_STATUSCODE_GOOD;
 }
 
 static status UA_INTERNAL_FUNC_ATTR_WARN_UNUSED_RESULT
 writeChars(CtxJson *ctx, const char *c, size_t len) {
-    if(ctx->pos + len > ctx->end)
+    if(ctx->calcOnly) {
+        uintptr_t pos = (uintptr_t)ctx->pos;
+        uintptr_t end = (uintptr_t)ctx->end;
+        if(len > end - pos)
+            return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+        ctx->pos = (UA_Byte*)(pos + len);
+        return UA_STATUSCODE_GOOD;
+    }
+    if(len > (size_t)(ctx->end - ctx->pos))
         return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
-    if(!ctx->calcOnly)
-        memcpy(ctx->pos, c, len);
+    memcpy(ctx->pos, c, len);
     ctx->pos += len;
     return UA_STATUSCODE_GOOD;
 }
@@ -359,18 +370,14 @@ ENCODE_JSON(Int64) {
 ENCODE_JSON(Float) {
     char buffer[32];
     size_t len;
-    if(*src != *src) {
-        strcpy(buffer, "\"NaN\"");
-        len = strlen(buffer);
-    } else if(*src == INFINITY) {
-        strcpy(buffer, "\"Infinity\"");
-        len = strlen(buffer);
-    } else if(*src == -INFINITY) {
-        strcpy(buffer, "\"-Infinity\"");
-        len = strlen(buffer);
-    } else {
-        len = dtoa((UA_Double)*src, buffer);
-    }
+    if(*src != *src)
+        return writeChars(ctx, "\"NaN\"", 5);
+    if(*src == INFINITY)
+        return writeChars(ctx, "\"Infinity\"", 10);
+    if(*src == -INFINITY)
+        return writeChars(ctx, "\"-Infinity\"", 11);
+
+    len = dtoa((UA_Double)*src, buffer);
 
     if(ctx->pos + len > ctx->end)
         return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
@@ -384,18 +391,14 @@ ENCODE_JSON(Float) {
 ENCODE_JSON(Double) {
     char buffer[32];
     size_t len;
-    if(*src != *src) {
-        strcpy(buffer, "\"NaN\"");
-        len = strlen(buffer);
-    } else if(*src == INFINITY) {
-        strcpy(buffer, "\"Infinity\"");
-        len = strlen(buffer);
-    } else if(*src == -INFINITY) {
-        strcpy(buffer, "\"-Infinity\"");
-        len = strlen(buffer);
-    } else {
-        len = dtoa(*src, buffer);
-    }
+    if(*src != *src)
+        return writeChars(ctx, "\"NaN\"", 5);
+    if(*src == INFINITY)
+        return writeChars(ctx, "\"Infinity\"", 10);
+    if(*src == -INFINITY)
+        return writeChars(ctx, "\"-Infinity\"", 11);
+
+    len = dtoa(*src, buffer);
 
     if(ctx->pos + len > ctx->end)
         return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
@@ -587,6 +590,8 @@ ENCODE_JSON(LocalizedText) {
 }
 
 ENCODE_JSON(QualifiedName) {
+    if(src->namespaceIndex == 0 && src->name.data == NULL)
+        return writeChars(ctx, "null", 4);
     UA_String out = UA_STRING_NULL;
     UA_StatusCode ret = UA_QualifiedName_printEx(src, &out, ctx->namespaceMapping);
     ret |= ENCODE_DIRECT_JSON(&out, String);
@@ -765,7 +770,11 @@ encodeVariantInner(CtxJson *ctx, const UA_Variant *src) {
 }
 
 ENCODE_JSON(Variant) {
-    return writeJsonObjStart(ctx) | encodeVariantInner(ctx, src) | writeJsonObjEnd(ctx);
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    res |= writeJsonObjStart(ctx);
+    res |= encodeVariantInner(ctx, src);
+    res |= writeJsonObjEnd(ctx);
+    return res;
 }
 
 /* DataValue */
@@ -882,7 +891,11 @@ encodeJsonStructureContent(CtxJson *ctx, const void *src, const UA_DataType *typ
 
 static status
 encodeJsonStructure(CtxJson *ctx, const void *src, const UA_DataType *type) {
-    return writeJsonObjStart(ctx) | encodeJsonStructureContent(ctx, src, type) | writeJsonObjEnd(ctx);
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    res |= writeJsonObjStart(ctx);
+    res |= encodeJsonStructureContent(ctx, src, type);
+    res |= writeJsonObjEnd(ctx);
+    return res;
 }
 
 static status
@@ -2213,8 +2226,9 @@ DiagnosticInfoInner_decodeJson(ParseCtx* ctx, void* dst, const UA_DataType* type
     return DiagnosticInfo_decodeJson(ctx, inner, type);
 }
 
-status
-decodeFields(ParseCtx *ctx, DecodeEntry *entries, size_t entryCount) {
+static status
+decodeFieldsInternal(ParseCtx *ctx, DecodeEntry *entries, size_t entryCount,
+                     UA_Boolean allowUnknown) {
     CHECK_TOKEN_BOUNDS;
     CHECK_NULL_SKIP; /* null is treated like an empty object */
 
@@ -2263,6 +2277,11 @@ decodeFields(ParseCtx *ctx, DecodeEntry *entries, size_t entryCount) {
 
         /* The key is unknown */
         if(!entry) {
+            if(allowUnknown) {
+                ctx->index++; /* key -> value */
+                skipObject(ctx);
+                continue;
+            }
             ret = UA_STATUSCODE_BADDECODINGERROR;
             break;
         }
@@ -2295,6 +2314,17 @@ decodeFields(ParseCtx *ctx, DecodeEntry *entries, size_t entryCount) {
 
     ctx->depth--;
     return ret;
+}
+
+status
+decodeFields(ParseCtx *ctx, DecodeEntry *entries, size_t entryCount) {
+    return decodeFieldsInternal(ctx, entries, entryCount, false);
+}
+
+status
+decodeFieldsAllowUnknown(ParseCtx *ctx, DecodeEntry *entries,
+                         size_t entryCount) {
+    return decodeFieldsInternal(ctx, entries, entryCount, true);
 }
 
 static status

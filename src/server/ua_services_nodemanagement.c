@@ -95,7 +95,7 @@ checkSetIsDynamicVariable(UA_Server *server, UA_Session *session,
 
 static const UA_NodeId parentReferences[UA_PARENT_REFERENCES_COUNT] = {
     {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HASSUBTYPE}},
-    {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HASCOMPONENT}}
+    {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HIERARCHICALREFERENCES}}
 };
 
 static void
@@ -110,13 +110,25 @@ logAddNode(const UA_Logger *logger, UA_Session *session,
 static UA_StatusCode
 checkParentReference(UA_Server *server, UA_Session *session, const UA_NodeHead *head,
                      const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId) {
+    UA_Boolean noParent = UA_NodeId_isNull(parentNodeId) &&
+                          UA_NodeId_isNull(referenceTypeId);
+
     /* Objects do not need a parent (e.g. mandatory/optional modellingrules).
      * Also, there are some variables which do not have parents, e.g.
      * EnumStrings, EnumValues */
     if((head->nodeClass == UA_NODECLASS_OBJECT ||
         head->nodeClass == UA_NODECLASS_VARIABLE) &&
-       UA_NodeId_isNull(parentNodeId) && UA_NodeId_isNull(referenceTypeId))
+       noParent)
         return UA_STATUSCODE_GOOD;
+
+    /* Part 3 requires Methods to be the target of a HasComponent reference.
+     * Accept detached Methods for compatibility with legacy NodeSets. */
+    if(head->nodeClass == UA_NODECLASS_METHOD && noParent) {
+        UA_LOG_WARNING_SESSION(server->config.logging, session,
+                               "AddNode (%N): The Method is detached (has no parent)",
+                               head->nodeId);
+        return UA_STATUSCODE_GOOD;
+    }
 
     /* See if the parent exists */
     const UA_Node *parent = UA_NODESTORE_GET(server, parentNodeId);
@@ -402,6 +414,28 @@ static const UA_NodeId baseObjectType =
 static const UA_NodeId hasTypeDefinition =
     {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_HASTYPEDEFINITION}};
 
+static UA_Boolean
+compatibleVariableTypeValue(UA_Server *server, UA_Session *session,
+                            const UA_VariableNode *node,
+                            const UA_VariableTypeNode *vt,
+                            const UA_Variant *value) {
+    const UA_NodeId *dataType = &node->dataType;
+    if(UA_NodeId_isNull(dataType))
+        dataType = &vt->dataType;
+
+    size_t arrayDimensionsSize = node->arrayDimensionsSize;
+    const UA_UInt32 *arrayDimensions = node->arrayDimensions;
+    if(arrayDimensionsSize == 0 && vt->arrayDimensionsSize > 0) {
+        arrayDimensionsSize = vt->arrayDimensionsSize;
+        arrayDimensions = vt->arrayDimensions;
+    }
+
+    const char *reason;
+    return compatibleValue(server, session, dataType, node->valueRank,
+                           arrayDimensionsSize, arrayDimensions, value,
+                           NULL, &reason);
+}
+
 /* Use attributes from the variable type wherever required. Reload the node if
  * changes were made. */
 static UA_StatusCode
@@ -425,7 +459,8 @@ useVariableTypeAttributes(UA_Server *server, UA_Session *session,
         UA_DataValue v;
         UA_DataValue_init(&v);
         retval = readValueAttribute(server, session, (const UA_VariableNode*)vt, &v);
-        if(retval == UA_STATUSCODE_GOOD && v.hasValue) {
+        if(retval == UA_STATUSCODE_GOOD && v.hasValue &&
+           compatibleVariableTypeValue(server, session, node, vt, &v.value)) {
             retval = writeAttribute(server, session, &node->head.nodeId,
                                     UA_ATTRIBUTEID_VALUE, &v.value,
                                     &UA_TYPES[UA_TYPES_VARIANT]);
@@ -602,6 +637,31 @@ isMandatoryChild(UA_Server *server, UA_Session *session,
     return found;
 }
 
+#define UA_MAX_NODE_INSTANTIATION_DEPTH 64
+
+static UA_StatusCode
+beginChildInstantiation(UA_Server *server, UA_Session *session,
+                        const UA_NodeId *destinationNodeId,
+                        const UA_NodeId *sourceNodeId) {
+    if(server->nodeInstantiationDepth >= UA_MAX_NODE_INSTANTIATION_DEPTH) {
+        UA_LOG_WARNING_SESSION(server->config.logging, session,
+                               "AddNode (%N): Recursive child instantiation "
+                               "exceeded the maximum depth %u while copying %N",
+                               *destinationNodeId,
+                               UA_MAX_NODE_INSTANTIATION_DEPTH, *sourceNodeId);
+        return UA_STATUSCODE_BADTYPEDEFINITIONINVALID;
+    }
+
+    server->nodeInstantiationDepth++;
+    return UA_STATUSCODE_GOOD;
+}
+
+static void
+endChildInstantiation(UA_Server *server) {
+    UA_assert(server->nodeInstantiationDepth > 0);
+    server->nodeInstantiationDepth--;
+}
+
 static UA_StatusCode
 copyAllChildren(UA_Server *server, UA_Session *session,
                 const UA_NodeId *source, const UA_NodeId *destination);
@@ -673,18 +733,29 @@ static UA_StatusCode
 copyObjectVariableChild(UA_Server *server, UA_Session *session,
                         const UA_NodeId *destinationNodeId,
                         const UA_ReferenceDescription *rd) {
-    /* Make a copy of the node */
-    UA_Node *node;
-    UA_StatusCode res = UA_NODESTORE_GETCOPY(server, &rd->nodeId.nodeId, &node);
-    if(res != UA_STATUSCODE_GOOD)
+    /* This creates a new logical node from an instance declaration. It is not
+     * an editable replacement of the source node, so runtime associations such
+     * as attached MonitoredItems must not be copied. */
+    const UA_Node *source = UA_NODESTORE_GET(server, &rd->nodeId.nodeId);
+    if(!source)
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+
+    UA_Node *node = UA_NODESTORE_NEW(server, source->head.nodeClass);
+    if(!node) {
+        UA_NODESTORE_RELEASE(server, source);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+
+    UA_StatusCode res = UA_Node_copy(source, node);
+    UA_NODESTORE_RELEASE(server, source);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_NODESTORE_DELETE(server, node);
         return res;
+    }
 
     /* Remove the context of the copied node */
     node->head.context = NULL;
     node->head.constructed = false;
-#ifdef UA_ENABLE_SUBSCRIPTIONS
-    node->head.monitoredItems = NULL;
-#endif
 
     /* The value source callbacks are copied by default. But we don't want
      * to keep it here. */
@@ -800,8 +871,15 @@ copyChild(UA_Server *server, UA_Session *session,
     /* Existing child with that browseName. Deep-copy missing members. */
     if(retval == UA_STATUSCODE_GOOD) {
         if(rd->nodeClass == UA_NODECLASS_VARIABLE ||
-           rd->nodeClass == UA_NODECLASS_OBJECT)
-            retval = copyAllChildren(server, session, &rd->nodeId.nodeId, &existingChild);
+           rd->nodeClass == UA_NODECLASS_OBJECT) {
+            retval = beginChildInstantiation(server, session, destinationNodeId,
+                                             &rd->nodeId.nodeId);
+            if(retval == UA_STATUSCODE_GOOD) {
+                retval = copyAllChildren(server, session, &rd->nodeId.nodeId,
+                                         &existingChild);
+                endChildInstantiation(server);
+            }
+        }
         UA_NodeId_clear(&existingChild);
         return retval;
     }
@@ -839,7 +917,12 @@ copyChild(UA_Server *server, UA_Session *session,
     /* Child is a variable or object */
     if(rd->nodeClass == UA_NODECLASS_VARIABLE ||
        rd->nodeClass == UA_NODECLASS_OBJECT) {
+        retval = beginChildInstantiation(server, session, destinationNodeId,
+                                         &rd->nodeId.nodeId);
+        if(retval != UA_STATUSCODE_GOOD)
+            return retval;
         retval = copyObjectVariableChild(server, session, destinationNodeId, rd);
+        endChildInstantiation(server);
     }
 
     return retval;
@@ -2343,8 +2426,10 @@ Operation_addReference(UA_Server *server, UA_Session *session, void *context,
         return;
     }
 
-    /* Add the first direction */
-    UA_UInt32 targetNameHash = UA_QualifiedName_hash(&targetNode->head.browseName);
+    /* Add the first direction. Use hash 0 for non-local targets where
+     * targetNode is NULL (their browse name is not available locally). */
+    UA_UInt32 targetNameHash = targetNode ?
+        UA_QualifiedName_hash(&targetNode->head.browseName) : 0;
     *retval = UA_Node_addReference(sourceNode, refTypeIndex, item->isForward,
                                    &item->targetNodeId, targetNameHash);
     UA_Boolean firstExisted = false;

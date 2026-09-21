@@ -43,7 +43,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # overwritten with more detailed information if git is available.
 set(OPEN62541_VER_MAJOR 1)
 set(OPEN62541_VER_MINOR 5)
-set(OPEN62541_VER_PATCH 5)
+set(OPEN62541_VER_PATCH 8)
 set(OPEN62541_VER_LABEL "") # like "-rc1" or "-g4538abcd" or "-g4538abcd-dirty"
 set(OPEN62541_VER_COMMIT "unknown-commit")
 
@@ -268,6 +268,12 @@ else()
     set(UA_GENERATED_NAMESPACE_ZERO ON)
 endif()
 
+if(UA_NAMESPACE_ZERO STREQUAL "MINIMAL")
+    set(UA_NAMESPACE_ZERO_MINIMAL ON)
+else()
+    set(UA_NAMESPACE_ZERO_MINIMAL OFF)
+endif()
+
 if(UA_NAMESPACE_ZERO STREQUAL "FULL")
     set(UA_GENERATED_NAMESPACE_ZERO_FULL ON)
 else()
@@ -344,6 +350,9 @@ endif()
 
 option(UA_ENABLE_PUBSUB_INFORMATIONMODEL "Enable PubSub information model twin" ${UA_ENABLE_PUBSUB})
 if(UA_ENABLE_PUBSUB_INFORMATIONMODEL)
+    if(NOT UA_ENABLE_METHODCALLS)
+        message(FATAL_ERROR "PubSub information model representation requires UA_ENABLE_METHODCALLS.")
+    endif()
     if(UA_NAMESPACE_ZERO STREQUAL "MINIMAL")
         message(FATAL_ERROR "PubSub information model representation cannot be used with MINIMAL namespace zero.")
     endif()
@@ -391,6 +400,9 @@ mark_as_advanced(UA_ENABLE_DETERMINISTIC_RNG)
 option(UA_ENABLE_MALLOC_SINGLETON
        "Use a global variable pointer for malloc (and free, ...) that can be switched at runtime" OFF)
 mark_as_advanced(UA_ENABLE_MALLOC_SINGLETON)
+
+option(UA_LWIP_EXTERNAL "LwIP is provided by the parent project" OFF)
+mark_as_advanced(UA_LWIP_EXTERNAL)
 
 option(UA_MSVC_FORCE_STATIC_CRT "Force linking with the static C-runtime library when compiling to static library with MSVC" ON)
 mark_as_advanced(UA_MSVC_FORCE_STATIC_CRT)
@@ -578,8 +590,12 @@ if(UA_ARCHITECTURE_LWIP)
     #                   ../lwip/contrib/ports/unix/posixlib/include;
     #                   ../lwip/src/include
     # LWIP_LIBRARIES    ../lwip/contrib/ports/unix/lib/build/liblwip.so
-    find_package(LWIP REQUIRED)
-    list(APPEND open62541_LIBRARIES ${LWIP_LIBRARIES})
+    if(NOT UA_LWIP_EXTERNAL)
+        find_package(LWIP REQUIRED)
+    endif()
+    if(LWIP_LIBRARIES)
+        list(APPEND open62541_LIBRARIES ${LWIP_LIBRARIES})
+    endif()
 endif()
 
 #####################
@@ -633,12 +649,17 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang") AND
         check_add_cc_flag("-Wno-cast-function-type")
     endif()
 
-    # Clang 22 flags __COUNTER__ as -Wc2y-extensions under -Wpedantic -std=c99
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND
-       CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "22.0")
+    # Clang 22 flags __COUNTER__ as -Wc2y-extensions under -Wpedantic -std=c99.
+    # GCC 14 also added the flag. Older compilers (e.g. gcc 9 on Ubuntu 20.04)
+    # reject the flag as an unrecognized option, which becomes an error under
+    # -Werror. check_add_cc_flag uses try_compile without -Werror, so the
+    # unknown-option warning is silently accepted during the check and the flag
+    # leaks into the build. Gate it explicitly on the compilers that support it.
+    if((CMAKE_C_COMPILER_ID STREQUAL "Clang" AND
+        CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "22.0") OR
+       (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND
+        CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "14.0"))
         add_cc_flag("-Wno-c2y-extensions")
-    else()
-        check_add_cc_flag("-Wno-c2y-extensions")
     endif()
 
     # Overlength strings may occur in generated code and are not harmful
@@ -741,13 +762,23 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang") AND
        CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT UA_ENABLE_UNIT_TESTS_MEMCHECK)
         # Add default sanitizer settings when using clang and Debug build.
         # This allows e.g. CLion to find memory locations for SegFaults
-        message(STATUS "Sanitizer enabled")
         set(SANITIZER_FLAGS "-g -fno-omit-frame-pointer -fsanitize=address,undefined")
         if(CMAKE_CXX_COMPILER_VERSION AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
             set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize-coverage=trace-pc-guard")
         endif()
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS}")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SANITIZER_FLAGS}")
+        set(CMAKE_REQUIRED_FLAGS_BACKUP "${CMAKE_REQUIRED_FLAGS}")
+        set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${SANITIZER_FLAGS}")
+        check_c_compiler_flag("${SANITIZER_FLAGS}" CC_HAS_DEBUG_SANITIZER)
+        set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS_BACKUP}")
+        unset(CMAKE_REQUIRED_FLAGS_BACKUP)
+        if(CC_HAS_DEBUG_SANITIZER)
+            message(STATUS "Sanitizer enabled")
+            set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS}")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SANITIZER_FLAGS}")
+        else()
+            message(STATUS "Sanitizer disabled: compiler does not support ${SANITIZER_FLAGS}")
+        endif()
+        unset(CC_HAS_DEBUG_SANITIZER CACHE)
     endif()
 
     # Strip release builds
@@ -853,7 +884,7 @@ set(lib_headers ${PROJECT_SOURCE_DIR}/deps/open62541_queue.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_internal.h
                 ${PROJECT_SOURCE_DIR}/src/client/ua_client_internal.h)
 
-if(UA_ENABLE_ENCRYPTION AND (UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION))
+if(UA_ENABLE_AMALGAMATION OR (UA_ENABLE_ENCRYPTION AND UA_ARCHITECTURE_WIN32))
     list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/tr_dirent.h)
 endif()
 
@@ -987,8 +1018,8 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
     set(MDNSD_GENERATED_DIR "${PROJECT_BINARY_DIR}/src_generated/mdnsd")
     file(MAKE_DIRECTORY "${MDNSD_GENERATED_DIR}")
 
-    set(MDNSD_LIBMDNSD_HEADERS 1035.h xht.h sdtxt.h mdnsd.h)
-    set(MDNSD_LIBMDNSD_SOURCES 1035.c xht.c sdtxt.c mdnsd.c log.c)
+    set(MDNSD_LIBMDNSD_HEADERS 1035.h xht.h sdtxt.h inet.h mdnsd.h)
+    set(MDNSD_LIBMDNSD_SOURCES 1035.c xht.c sdtxt.c inet.c mdnsd.c log.c)
 
     foreach(_f IN LISTS MDNSD_LIBMDNSD_HEADERS MDNSD_LIBMDNSD_SOURCES)
         configure_file(
@@ -1005,6 +1036,45 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
         string(REGEX REPLACE "([^A-Za-z0-9_])class([^A-Za-z0-9_])" "\\1clazz\\2" _content "${_content}")
         string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2" _content "${_content}")
         string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2" _content "${_content}")
+        if(_f STREQUAL "mdnsd.h")
+            string(REPLACE "#define DBG(fmt, args...)  mdnsd_log(LOG_DEBUG, \"%s(): \" fmt, __func__, ##args)"
+                           "#define DBG(fmt, ...)  mdnsd_log(LOG_DEBUG, \"%s(): \" fmt, __func__, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define INFO(fmt, args...) mdnsd_log(LOG_INFO, \"%s(): \" fmt, __func__, ##args)"
+                           "#define INFO(fmt, ...) mdnsd_log(LOG_INFO, \"%s(): \" fmt, __func__, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define NOTE(fmt, args...) mdnsd_log(LOG_NOTICE, fmt, ##args)"
+                           "#define NOTE(...) mdnsd_log(LOG_NOTICE, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define WARN(fmt, args...) mdnsd_log(LOG_WARNING, fmt, ##args)"
+                           "#define WARN(...) mdnsd_log(LOG_WARNING, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define ERR(fmt, args...)  mdnsd_log(LOG_ERR, fmt, ##args)"
+                           "#define ERR(...)  mdnsd_log(LOG_ERR, __VA_ARGS__)"
+                           _content "${_content}")
+        endif()
+        if(_f STREQUAL "mdnsd.c")
+            string(REPLACE
+[=[		c->rr.rdname = strdup(r->known.ns.name);]=]
+[=[		if (!r->known.ns.name) {
+			free(c->rr.rdata);
+			free(c->rr.name);
+			free(c);
+			return 1;
+		}
+		c->rr.rdname = strdup(r->known.ns.name);]=]
+                _content "${_content}")
+            string(REPLACE
+[=[		c->rr.rdname = strdup(r->known.srv.name);]=]
+[=[		if (!r->known.srv.name) {
+			free(c->rr.rdata);
+			free(c->rr.name);
+			free(c);
+			return 1;
+		}
+		c->rr.rdname = strdup(r->known.srv.name);]=]
+                _content "${_content}")
+        endif()
         file(WRITE "${MDNSD_GENERATED_DIR}/${_f}" "${_content}")
     endforeach()
 
@@ -1013,6 +1083,7 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
         ${MDNSD_GENERATED_DIR}/1035.c
         ${MDNSD_GENERATED_DIR}/xht.c
         ${MDNSD_GENERATED_DIR}/sdtxt.c
+        ${MDNSD_GENERATED_DIR}/inet.c
         ${MDNSD_GENERATED_DIR}/mdnsd.c
         ${MDNSD_GENERATED_DIR}/log.c
         PROPERTIES COMPILE_FLAGS
@@ -1027,12 +1098,14 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
         ${MDNSD_GENERATED_DIR}/1035.h
         ${MDNSD_GENERATED_DIR}/xht.h
         ${MDNSD_GENERATED_DIR}/sdtxt.h
+        ${MDNSD_GENERATED_DIR}/inet.h
         ${MDNSD_GENERATED_DIR}/mdnsd.h)
     list(APPEND lib_sources
         ${PROJECT_SOURCE_DIR}/src/server/ua_discovery_mdns.c
         ${MDNSD_GENERATED_DIR}/1035.c
         ${MDNSD_GENERATED_DIR}/xht.c
         ${MDNSD_GENERATED_DIR}/sdtxt.c
+        ${MDNSD_GENERATED_DIR}/inet.c
         ${MDNSD_GENERATED_DIR}/mdnsd.c
         ${MDNSD_GENERATED_DIR}/log.c)
 elseif(UA_ENABLE_DISCOVERY_MULTICAST_AVAHI)
@@ -1606,12 +1679,23 @@ endif()
 # Enable shared library with `-DBUILD_SHARED_LIBS=ON`
 
 # export library (either static or shared depending on BUILD_SHARED_LIBS)
+# On the FreeRTOS architecture the open62541 target links against build-only
+# targets (freertos_kernel/freertos_config) that are not part of any export
+# set, so exporting the target fails at configure time. Still install the
+# library artifacts, but leave the target out of the export set there.
+if(UA_ARCHITECTURE_FREERTOS)
+install(TARGETS open62541
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+else()
 install(TARGETS open62541
         EXPORT open62541Targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         INCLUDES DESTINATION include)
+endif()
 
 set(open62541_install_tools_dir share/open62541)
 set(open62541_install_schema_dir share/open62541/schema)
@@ -1620,6 +1704,10 @@ foreach(f ${UA_NS0_NODESETS})
     list(APPEND open62541_install_ns0_nodesets "\${open62541_SCHEMA_DIR}/${f}")
 endforeach()
 
+# Create the CMake package files (open62541Config.cmake, ConfigVersion,
+# Targets). open62541Config.cmake includes open62541Targets.cmake, so they
+# must be installed together or not at all.
+if(NOT UA_ARCHITECTURE_FREERTOS)
 # Create open62541Config.cmake
 include(CMakePackageConfigHelpers)
 set(cmake_configfile_install ${CMAKE_INSTALL_LIBDIR}/cmake/open62541)
@@ -1648,6 +1736,7 @@ install(EXPORT open62541Targets
 export(TARGETS open62541
        NAMESPACE open62541::
        FILE ${CMAKE_CURRENT_BINARY_DIR}/open62541Targets.cmake)
+endif()
 
 # Generate and install open62541.pc
 set(pkgcfgpubliclibs "")
@@ -1669,7 +1758,7 @@ string(REPLACE ";" " " pkgcfg_requiresprivate "${pkgcfg_requiresprivate}")
 string(REPLACE ";" " " pkgcfg_libsprivate "${pkgcfg_libsprivate}")
 configure_file(tools/open62541.pc.in ${PROJECT_BINARY_DIR}/src_generated/open62541.pc @ONLY)
 
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT UA_ARCHITECTURE_FREERTOS)
     install(FILES "${PROJECT_BINARY_DIR}/src_generated/open62541.pc"
             DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 endif()

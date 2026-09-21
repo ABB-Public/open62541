@@ -1671,8 +1671,9 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
         }
 
         /* Iterate over all MonitoredItems registered in the node  */
-        for(UA_MonitoredItem *mon = node->head.monitoredItems;
-            mon != NULL; mon = mon->sampling.nodeListNext) {
+        UA_MonitoredItem *mon;
+        LIST_FOREACH(mon, (const UA_MonitoredItemList*)&node->head.monitoredItems,
+                     sampling.nodeListEntry) {
             /* Is this an Event-MonitoredItem? */
             if(mon->itemToMonitor.attributeId != UA_ATTRIBUTEID_EVENTNOTIFIER)
                 continue;
@@ -1701,10 +1702,11 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
             }
             ctx.filter = *(UA_EventFilter*)mon->parameters.filter.content.decoded.data;
 
-            /* Select the session used to resolve SimpleAttributeOperands. If
-             * the subscription is not bound to a session, use the AdminSession.
-             * TODO: Preserve the access rights of the last connected session? */
-            ctx.session = (sub->session) ? sub->session : &server->adminSession;
+            /* Do not evaluate event fields for detached subscriptions.
+             * Using adminSession would bypass per-session access control. */
+            if(!sub->session)
+                continue;
+            ctx.session = sub->session;
 
             /* Evaluate the where-clause and create a notification */
             res = UA_MonitoredItem_addEvent(mon, &ctx);

@@ -47,13 +47,10 @@ UA_Notification_new(void) {
     return n;
 }
 
-/* Dequeue and delete the notification */
 static void
-UA_Notification_delete(UA_Notification *n) {
+UA_Notification_deleteDetached(UA_Notification *n) {
     UA_assert(n != UA_SUBSCRIPTION_QUEUE_SENTINEL);
     UA_assert(n->mon);
-    UA_Notification_dequeueMon(n);
-    UA_Notification_dequeueSub(n);
     switch(n->mon->itemToMonitor.attributeId) {
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
     case UA_ATTRIBUTEID_EVENTNOTIFIER:
@@ -65,6 +62,34 @@ UA_Notification_delete(UA_Notification *n) {
         break;
     }
     UA_free(n);
+}
+
+/* Remove the notification from its MonitoredItem and Subscription queues. */
+static void
+UA_Notification_detach(UA_Notification *n) {
+    UA_Notification_dequeueMon(n);
+    UA_Notification_dequeueSub(n);
+}
+
+/* Dequeue and delete the notification */
+static void
+UA_Notification_delete(UA_Notification *n) {
+    UA_Notification_detach(n);
+    UA_Notification_deleteDetached(n);
+}
+
+/* Delete Notifications preceding n in the queue of the MonitoredItem. These
+ * are earlier non-reporting Notifications that shall not appear after n. */
+static void
+UA_Notification_deletePredecessors(UA_Notification *n) {
+    UA_Notification *prev;
+    while((prev = TAILQ_PREV(n, NotificationQueue, monEntry))) {
+        UA_Notification_detach(prev);
+
+        /* Help the Clang scan-analyzer track the queue progress. */
+        UA_assert(prev != TAILQ_PREV(n, NotificationQueue, monEntry));
+        UA_Notification_deleteDetached(prev);
+    }
 }
 
 /* Add to the MonitoredItem queue, update all counters and then handle overflow */
@@ -200,8 +225,7 @@ UA_Notification_enqueueAndTrigger(UA_Server *server, UA_Notification *n) {
     }
 }
 
-/* Remove from the MonitoredItem queue. This only happens if the Notification is
- * deleted right after. */
+/* Remove from the MonitoredItem queue and update its counters. */
 static void
 UA_Notification_dequeueMon(UA_Notification *n) {
     UA_MonitoredItem *mon = n->mon;
@@ -269,12 +293,23 @@ UA_Subscription_new(void) {
 
     TAILQ_INIT(&newSub->retransmissionQueue);
     TAILQ_INIT(&newSub->notificationQueue);
+    ZIP_INIT(&newSub->monitoredItemsById);
     return newSub;
 }
 
 static void
 delayedFreeSubscription(void *app, void *context) {
     UA_free(context);
+}
+
+static void
+deleteMonitoredItem(UA_Server *server, UA_MonitoredItem *mon,
+                    UA_Boolean notify, UA_Boolean removeFromIndex);
+
+static void *
+deleteMonitoredItemVisitor(void *context, UA_MonitoredItem *mon) {
+    deleteMonitoredItem((UA_Server*)context, mon, false, false);
+    return NULL;
 }
 
 void
@@ -284,12 +319,15 @@ UA_Subscription_delete(UA_Server *server, UA_Subscription *sub) {
     UA_EventLoop *el = server->config.eventLoop;
 
     /* Delete monitored Items */
-    UA_assert(server->monitoredItemsSize >= sub->monitoredItemsSize);
-    UA_MonitoredItem *mon, *tmp_mon;
-    LIST_FOREACH_SAFE(mon, &sub->monitoredItems, listEntry, tmp_mon) {
-        UA_MonitoredItem_delete(server, mon);
-    }
-    UA_assert(sub->monitoredItemsSize == 0);
+    UA_UInt32 monitoredItemsSize = sub->monitoredItemsSize;
+    UA_assert(server->monitoredItemsSize >= monitoredItemsSize);
+    /* Detach the index so deletion does not rebalance a discarded tree. */
+    UA_MonitoredItemIdTree monitoredItems = sub->monitoredItemsById;
+    ZIP_INIT(&sub->monitoredItemsById);
+    sub->monitoredItemsSize = 0;
+    server->monitoredItemsSize -= monitoredItemsSize;
+    ZIP_ITER(UA_MonitoredItemIdTree, &monitoredItems,
+             deleteMonitoredItemVisitor, server);
 
     /* Unregister the publish callback and possible delayed callback */
     Subscription_setState(server, sub, UA_SUBSCRIPTIONSTATE_REMOVING);
@@ -354,12 +392,8 @@ Subscription_resetLifetime(UA_Subscription *sub) {
 
 UA_MonitoredItem *
 UA_Subscription_getMonitoredItem(UA_Subscription *sub, UA_UInt32 monitoredItemId) {
-    UA_MonitoredItem *mon;
-    LIST_FOREACH(mon, &sub->monitoredItems, listEntry) {
-        if(mon->monitoredItemId == monitoredItemId)
-            break;
-    }
-    return mon;
+    return ZIP_FIND(UA_MonitoredItemIdTree, &sub->monitoredItemsById,
+                    &monitoredItemId);
 }
 
 static void
@@ -545,17 +579,7 @@ prepareNotificationMessage(UA_Server *server, UA_Subscription *sub,
             break;
         }
 
-        /* If there are Notifications *before this one* in the MonitoredItem-
-         * local queue, remove all of them. These are earlier Notifications that
-         * are non-reporting. And we don't want them to show up after the
-         * current Notification has been sent out. */
-        UA_Notification *prev;
-        while((prev = TAILQ_PREV(n, NotificationQueue, monEntry))) {
-            UA_Notification_delete(prev);
-
-            /* Help the Clang scan-analyzer */
-            UA_assert(prev != TAILQ_PREV(n, NotificationQueue, monEntry));
-        }
+        UA_Notification_deletePredecessors(n);
 
         /* Delete the notification, remove from the queues and decrease the counters */
         UA_Notification_delete(n);
@@ -660,10 +684,18 @@ UA_Subscription_localPublish(UA_Server *server, UA_Subscription *sub) {
     lockServer(server);
     sub->delayedCallbackRegistered = false;
 
-    UA_Notification *n, *n_tmp;
-    TAILQ_FOREACH_SAFE(n, &sub->notificationQueue, subEntry, n_tmp) {
+    while(!TAILQ_EMPTY(&sub->notificationQueue)) {
+        UA_Notification *n = TAILQ_FIRST(&sub->notificationQueue);
         UA_MonitoredItem *mon = n->mon;
         UA_LocalMonitoredItem *localMon = (UA_LocalMonitoredItem*)mon;
+
+        UA_Notification_deletePredecessors(n);
+
+        /* Detach the current Notification before entering user code. */
+        UA_Notification_detach(n);
+
+        /* Help the Clang scan-analyzer track the queue progress. */
+        UA_assert(n != TAILQ_FIRST(&sub->notificationQueue));
 
         /* Move the content to the response */
         void *nodeContext = NULL;
@@ -685,27 +717,21 @@ UA_Subscription_localPublish(UA_Server *server, UA_Subscription *sub) {
         default:
             getNodeContext(server, mon->itemToMonitor.nodeId, &nodeContext);
             localMon->callback.
-                dataChangeCallback(server, mon->monitoredItemId, localMon->context,
+                dataChangeCallback(server, mon->monitoredItemId,
+                                   localMon->context,
                                    &mon->itemToMonitor.nodeId, nodeContext,
                                    mon->itemToMonitor.attributeId,
                                    &n->data.dataChange.value);
             break;
         }
 
-        /* If there are Notifications *before this one* in the MonitoredItem-
-         * local queue, remove all of them. These are earlier Notifications that
-         * are non-reporting. And we don't want them to show up after the
-         * current Notification has been sent out. */
-        UA_Notification *prev;
-        while((prev = TAILQ_PREV(n, NotificationQueue, monEntry))) {
-            UA_Notification_delete(prev);
+        /* The detached Notification stayed valid throughout the callback. */
+        UA_Notification_deleteDetached(n);
 
-            /* Help the Clang scan-analyzer */
-            UA_assert(prev != TAILQ_PREV(n, NotificationQueue, monEntry));
-        }
-
-        /* Delete the notification, remove from the queues and decrease the counters */
-        UA_Notification_delete(n);
+        /* A callback-created Notification has already registered another
+         * local-publish callback. Continue in the next EventLoop iteration. */
+        if(sub->delayedCallbackRegistered)
+            break;
     }
 
     unlockServer(server);
@@ -944,6 +970,28 @@ UA_Subscription_publish(UA_Server *server, UA_Subscription *sub) {
     }
 }
 
+static void *
+resendDataMonitoredItemVisitor(void *context, UA_MonitoredItem *mon) {
+    UA_Server *server = (UA_Server*)context;
+
+    /* Create only DataChange notifications */
+    if(mon->itemToMonitor.attributeId == UA_ATTRIBUTEID_EVENTNOTIFIER)
+        return NULL;
+
+    /* Only if the mode is monitoring */
+    if(mon->monitoringMode != UA_MONITORINGMODE_REPORTING)
+        return NULL;
+
+    /* If a value is queued for a data MonitoredItem, the next value in
+     * the queue is sent in the Publish response. */
+    if(mon->queueSize > 0)
+        return NULL;
+
+    /* Create a notification with the last sampled value */
+    UA_MonitoredItem_createDataChangeNotification(server, mon, &mon->lastValue);
+    return NULL;
+}
+
 void
 UA_Subscription_resendData(UA_Server *server, UA_Subscription *sub) {
     UA_LOCK_ASSERT(&server->serviceMutex);
@@ -956,24 +1004,8 @@ UA_Subscription_resendData(UA_Server *server, UA_Subscription *sub) {
      * queued for a data MonitoredItem, the next value in the queue is sent in
      * the Publish response. If no value is queued for a data MonitoredItem, the
      * last value sent is repeated in the Publish response. */
-    UA_MonitoredItem *mon;
-    LIST_FOREACH(mon, &sub->monitoredItems, listEntry) {
-        /* Create only DataChange notifications */
-        if(mon->itemToMonitor.attributeId == UA_ATTRIBUTEID_EVENTNOTIFIER)
-            continue;
-
-        /* Only if the mode is monitoring */
-        if(mon->monitoringMode != UA_MONITORINGMODE_REPORTING)
-            continue;
-
-        /* If a value is queued for a data MonitoredItem, the next value in
-         * the queue is sent in the Publish response. */
-        if(mon->queueSize > 0)
-            continue;
-
-        /* Create a notification with the last sampled value */
-        UA_MonitoredItem_createDataChangeNotification(server, mon, &mon->lastValue);
-    }
+    ZIP_ITER(UA_MonitoredItemIdTree, &sub->monitoredItemsById,
+             resendDataMonitoredItemVisitor, server);
 }
 
 void
@@ -1244,8 +1276,8 @@ addMonitoredItemBackpointer(UA_Server *server, UA_Session *session,
                             UA_Node *node, void *data) {
     UA_MonitoredItem *mon = (UA_MonitoredItem*)data;
     UA_assert(mon != (UA_MonitoredItem*)~0);
-    mon->sampling.nodeListNext = node->head.monitoredItems;
-    node->head.monitoredItems = mon;
+    LIST_INSERT_HEAD((UA_MonitoredItemList*)&node->head.monitoredItems,
+                     mon, sampling.nodeListEntry);
     return UA_STATUSCODE_GOOD;
 }
 
@@ -1255,22 +1287,8 @@ removeMonitoredItemBackPointer(UA_Server *server, UA_Session *session,
     if(!node->head.monitoredItems)
         return UA_STATUSCODE_GOOD;
 
-    /* Edge case that it's the first element */
     UA_MonitoredItem *remove = (UA_MonitoredItem*)data;
-    if(node->head.monitoredItems == remove) {
-        node->head.monitoredItems = remove->sampling.nodeListNext;
-        return UA_STATUSCODE_GOOD;
-    }
-
-    UA_MonitoredItem *prev = node->head.monitoredItems;
-    UA_MonitoredItem *entry = prev->sampling.nodeListNext;
-    for(; entry != NULL; prev = entry, entry = entry->sampling.nodeListNext) {
-        if(entry == remove) {
-            prev->sampling.nodeListNext = entry->sampling.nodeListNext;
-            break;
-        }
-    }
-
+    LIST_REMOVE(remove, sampling.nodeListEntry);
     return UA_STATUSCODE_GOOD;
 }
 
@@ -1286,7 +1304,7 @@ UA_MonitoredItem_register(UA_Server *server, UA_MonitoredItem *mon) {
     UA_Subscription *sub = mon->subscription;
     mon->monitoredItemId = ++sub->lastMonitoredItemId;
     mon->subscription = sub;
-    LIST_INSERT_HEAD(&sub->monitoredItems, mon, listEntry);
+    ZIP_INSERT(UA_MonitoredItemIdTree, &sub->monitoredItemsById, mon);
     sub->monitoredItemsSize++;
     server->monitoredItemsSize++;
 
@@ -1305,7 +1323,8 @@ UA_MonitoredItem_register(UA_Server *server, UA_MonitoredItem *mon) {
 }
 
 static void
-unregisterMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
+unregisterMonitoredItem(UA_Server *server, UA_MonitoredItem *mon,
+                        UA_Boolean removeFromIndex) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
     if(!mon->registered)
@@ -1330,10 +1349,13 @@ unregisterMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
                                                      mon->itemToMonitor.attributeId, true);
     }
 
-    /* Deregister in Subscription and server */
-    sub->monitoredItemsSize--;
-    LIST_REMOVE(mon, listEntry);
-    server->monitoredItemsSize--;
+    /* Deregister in Subscription and server. During Subscription teardown the
+     * index and counts are already cleared before invoking user callbacks. */
+    if(removeFromIndex) {
+        sub->monitoredItemsSize--;
+        ZIP_REMOVE(UA_MonitoredItemIdTree, &sub->monitoredItemsById, mon);
+        server->monitoredItemsSize--;
+    }
 }
 
 UA_StatusCode
@@ -1400,20 +1422,53 @@ UA_MonitoredItem_setMonitoringMode(UA_Server *server, UA_MonitoredItem *mon,
 }
 
 static void
-delayedFreeMonitoredItem(void *app, void *context) {
-    UA_free(context);
+clearMonitoredItem(UA_Server *server, UA_MonitoredItem *mon) {
+    /* Remove the settings */
+    UA_ReadValueId_clear(&mon->itemToMonitor);
+    UA_MonitoringParameters_clear(&mon->parameters);
+
+    /* Remove the last samples */
+    UA_DataValue_clear(&mon->lastValue);
+
+    /* If this is a local MonitoredItem, clean up additional values */
+    if(mon->subscription == server->adminSubscription) {
+        UA_LocalMonitoredItem *lm = (UA_LocalMonitoredItem*)mon;
+        for(size_t i = 0; i < lm->eventFields.mapSize; i++)
+            UA_Variant_init(&lm->eventFields.map[i].value);
+        UA_KeyValueMap_clear(&lm->eventFields);
+    }
+    UA_free(mon);
 }
 
-void
-UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon) {
+static void
+delayedFreeMonitoredItem(void *application, void *context) {
+    UA_Server *server = (UA_Server*)application;
+    UA_MonitoredItem *mon = (UA_MonitoredItem*)context;
+    lockServer(server);
+
+    clearMonitoredItem(server, mon);
+    unlockServer(server);
+}
+
+static void
+deleteMonitoredItem(UA_Server *server, UA_MonitoredItem *mon,
+                    UA_Boolean notify, UA_Boolean removeFromIndex) {
     UA_LOCK_ASSERT(&server->serviceMutex);
+
+    /* Application callbacks can reenter deletion. Queue the embedded delayed
+     * callback only once. */
+    if(UA_MonitoredItem_isDeleting(mon))
+        return;
+    mon->delayedFreePointers.callback = delayedFreeMonitoredItem;
+    mon->delayedFreePointers.application = server;
+    mon->delayedFreePointers.context = mon;
 
     /* Remove the sampling callback */
     UA_MonitoredItem_unregisterSampling(server, mon);
 
     /* Deregister in Server and Subscription */
     if(mon->registered)
-        unregisterMonitoredItem(server, mon);
+        unregisterMonitoredItem(server, mon, removeFromIndex);
 
     /* Cancel outstanding async reads. The status code avoids the sample being
      * processed. Call _processReady to ensure that the callbacks have been
@@ -1435,29 +1490,29 @@ UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon) {
         UA_Notification_delete(notification);
     }
 
-    /* Remove the settings */
-    UA_ReadValueId_clear(&mon->itemToMonitor);
-    UA_MonitoringParameters_clear(&mon->parameters);
+    /* Notify after logical removal. Recursive public deletion can no longer
+     * locate the MonitoredItem and cannot queue delayed cleanup a second time. */
+    if(notify)
+        notifyMonitoredItem(server, mon,
+                            UA_APPLICATIONNOTIFICATIONTYPE_MONITOREDITEM_DELETE);
 
-    /* Remove the last samples */
-    UA_DataValue_clear(&mon->lastValue);
-
-    /* If this is a local MonitoredItem, clean up additional values */
-    if(mon->subscription == server->adminSubscription) {
-        UA_LocalMonitoredItem *lm = (UA_LocalMonitoredItem*)mon;
-        for(size_t i = 0; i < lm->eventFields.mapSize; i++)
-            UA_Variant_init(&lm->eventFields.map[i].value);
-        UA_KeyValueMap_clear(&lm->eventFields);
+    /* No callback can still reference the MonitoredItem after shutdown. */
+    if(server->state == UA_LIFECYCLESTATE_STOPPED) {
+        clearMonitoredItem(server, mon);
+        return;
     }
 
     /* Add a delayed callback to remove the MonitoredItem when the current jobs
      * have completed. This is needed to allow that a local MonitoredItem can
      * remove itself in the callback. */
-    mon->delayedFreePointers.callback = delayedFreeMonitoredItem;
-    mon->delayedFreePointers.application = NULL;
-    mon->delayedFreePointers.context = mon;
     UA_EventLoop *el = server->config.eventLoop;
     el->addDelayedCallback(el, &mon->delayedFreePointers);
+}
+
+void
+UA_MonitoredItem_delete(UA_Server *server, UA_MonitoredItem *mon,
+                        UA_Boolean notify) {
+    deleteMonitoredItem(server, mon, notify, true);
 }
 
 void
