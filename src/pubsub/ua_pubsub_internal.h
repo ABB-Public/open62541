@@ -757,8 +757,6 @@ typeContainsString(const UA_DataType *type, size_t depth) {
     return false;
 }
 
-#endif /* UA_ENABLE_PUBSUB */
-
 /* Free a partially-constructed component without re-asking the lifecycle
  * callback. Used by create() on abort paths; the existing remove/delete
  * defers free via deleteFlag for components with EventLoop channels. */
@@ -766,6 +764,8 @@ void
 UA_PubSubComponent_freeWithoutLifecycleCallback(UA_PubSubManager *psm,
                                                 void *component,
                                                 UA_PubSubComponentType type);
+
+#endif /* UA_ENABLE_PUBSUB */
 
 _UA_END_DECLS
 

@@ -28,6 +28,7 @@
 #define BUF_LEN (1024 * ( EVENT_SIZE + 16 ))
 #endif /* __linux__ */
 
+#ifndef UA_ARCHITECTURE_OUL
 static size_t
 UA_strnlen(const char *s, size_t maxlen) {
 	    size_t len = 0;
@@ -35,6 +36,7 @@ UA_strnlen(const char *s, size_t maxlen) {
 			        len++;
 		    return len;
 }
+#endif // UA_ARCHITECTURE_OUL
 
 typedef struct {
     /* Memory cert store as a base */
