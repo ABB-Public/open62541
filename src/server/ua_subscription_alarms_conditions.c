@@ -1422,6 +1422,22 @@ enableMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     return UA_STATUSCODE_GOOD;
 }
 
+/* The InputArguments metadata that the Call service validates against is
+ * resolved from the (mutable) node graph. Namespace-0 methods can have their
+ * InputArguments property re-bound to a forged VariableNode, so the actual
+ * runtime types of the EventId/Comment arguments must be checked here before
+ * they are reinterpreted as UA_ByteString / UA_LocalizedText. */
+static UA_StatusCode
+checkEventIdCommentArguments(size_t inputSize, const UA_Variant *input) {
+    if(inputSize != 2)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_BYTESTRING]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(!UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    return UA_STATUSCODE_GOOD;
+}
+
 static UA_StatusCode
 addCommentMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                          void *sessionContext, const UA_NodeId *methodId,
@@ -1429,6 +1445,10 @@ addCommentMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                          void *objectContext, size_t inputSize,
                          const UA_Variant *input, size_t outputSize,
                          UA_Variant *output) {
+    UA_StatusCode retval = checkEventIdCommentArguments(inputSize, input);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     UA_EventLoop *el = server->config.eventLoop;
 
     UA_QualifiedName fieldComment = UA_QUALIFIEDNAME(0, CONDITION_FIELD_COMMENT);
@@ -1453,9 +1473,8 @@ addCommentMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
      * in current implementation, methods are only being referenced from their ObjectType Node.
      * Because of that, the correct instance (Condition) will be found through
      * its last EventId */
-    UA_StatusCode retval =
-        UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
-                                           &triggerEvent);
+    retval = UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
+                                                &triggerEvent);
     CONDITION_ASSERT_RETURN_RETVAL(retval, "ConditionId based on EventId not found",);
 
     /* Check if enabled */
@@ -1517,6 +1536,10 @@ acknowledgeMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                           void *objectContext, size_t inputSize,
                           const UA_Variant *input, size_t outputSize,
                           UA_Variant *output) {
+    UA_StatusCode retval = checkEventIdCommentArguments(inputSize, input);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     UA_QualifiedName fieldComment = UA_QUALIFIEDNAME(0, CONDITION_FIELD_COMMENT);
     UA_Variant value;
 
@@ -1530,9 +1553,8 @@ acknowledgeMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
 
     /* Get condition branch to trigger the correct event */
     UA_NodeId conditionNode;
-    UA_StatusCode retval =
-        UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
-                                           &conditionNode);
+    retval = UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
+                                                &conditionNode);
     CONDITION_ASSERT_RETURN_RETVAL(retval, "ConditionId based on EventId not found",);
 
     /* Check if retained */
@@ -1597,6 +1619,10 @@ confirmMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                       void *objectContext, size_t inputSize,
                       const UA_Variant *input, size_t outputSize,
                       UA_Variant *output) {
+    UA_StatusCode retval = checkEventIdCommentArguments(inputSize, input);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     UA_QualifiedName fieldComment = UA_QUALIFIEDNAME(0, CONDITION_FIELD_COMMENT);
     UA_Variant value;
 
@@ -1610,9 +1636,8 @@ confirmMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
 
     /* Get condition branch to trigger the correct event */
     UA_NodeId conditionNode;
-    UA_StatusCode retval =
-        UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
-                                           &conditionNode);
+    retval = UA_Server_getConditionBranchNodeId(server, (UA_ByteString *)input[0].data,
+                                                &conditionNode);
     CONDITION_ASSERT_RETURN_RETVAL(retval, "ConditionId based on EventId not found",);
 
     /* Check if retained */
@@ -1790,6 +1815,26 @@ refresh2MethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     return UA_STATUSCODE_GOOD;
 }
 
+struct RefreshMethodContext {
+    UA_Server *server;
+    UA_Session *session;
+    UA_StatusCode retval;
+};
+
+static void *
+refreshMethodVisitor(void *context, UA_MonitoredItem *item) {
+    struct RefreshMethodContext *ctx = (struct RefreshMethodContext*)context;
+
+    if(item->itemToMonitor.attributeId != UA_ATTRIBUTEID_EVENTNOTIFIER)
+        return NULL;
+
+    ctx->retval = refreshLogic(ctx->server, ctx->session, item->subscription, item);
+    if(ctx->retval != UA_STATUSCODE_GOOD)
+        return item;
+
+    return NULL;
+}
+
 static UA_StatusCode
 refreshMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                       void *sessionContext, const UA_NodeId *methodId,
@@ -1812,14 +1857,16 @@ refreshMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     /* Trigger RefreshStartEvent and RefreshEndEvent for the each monitoredItem
      * in the subscription */
 
-    UA_MonitoredItem *item;
-    LIST_FOREACH(item, &subscription->monitoredItems, listEntry) {
-        if (item->itemToMonitor.attributeId != UA_ATTRIBUTEID_EVENTNOTIFIER)
-            continue;
-        UA_StatusCode retval = refreshLogic(server, session, subscription, item);
-        CONDITION_ASSERT_RETURN_RETVAL(retval, "Could not refresh Condition",
-                                       unlockServer(server););
-    }
+    struct RefreshMethodContext ctx;
+    ctx.server = server;
+    ctx.session = session;
+    ctx.retval = UA_STATUSCODE_GOOD;
+
+    ZIP_ITER(UA_MonitoredItemIdTree, &subscription->monitoredItemsById,
+             refreshMethodVisitor, &ctx);
+
+    CONDITION_ASSERT_RETURN_RETVAL(ctx.retval, "Could not refresh Condition",
+                                   unlockServer(server););
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;

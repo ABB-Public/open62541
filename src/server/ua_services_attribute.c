@@ -558,6 +558,7 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
             memmove(ed, &ed->enumDefinition, sizeof(UA_EnumDefinition));
             UA_Variant_setScalar(&v->value, ed, &UA_TYPES[UA_TYPES_ENUMDEFINITION]);
         } else {
+            UA_ExtensionObject_clear(&typeDescr);
             retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
         }
 #else
@@ -1206,7 +1207,7 @@ adjustValueType(UA_Server *server, UA_Variant *value,
 
     /* Find the target type */
     const UA_DataType *targetType =
-        UA_findDataTypeWithCustom(targetDataTypeId, server->config.customDataTypes);
+        UA_findDataTypeWithCustom(targetDataTypeId, serverCustomTypes(server));
     if(!targetType)
         return;
 
@@ -1671,8 +1672,9 @@ updateLocalizedText(const UA_LocalizedText *source, UA_LocalizedText *target) {
 static void
 triggerImmediateDataChange(UA_Server *server, UA_Session *session,
                            UA_Node *node, const UA_WriteValue *wvalue) {
-    UA_MonitoredItem *mon = node->head.monitoredItems;
-    for(; mon != NULL; mon = mon->sampling.nodeListNext) {
+    UA_MonitoredItem *mon;
+    LIST_FOREACH(mon, (UA_MonitoredItemList*)&node->head.monitoredItems,
+                 sampling.nodeListEntry) {
         if(mon->itemToMonitor.attributeId != wvalue->attributeId)
             continue;
         /* TODO: Allow async read for datachanges */

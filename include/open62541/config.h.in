@@ -18,7 +18,13 @@
 /**
  * Architecture
  * ------------
- * Define one of the following. */
+ * Definitions to enable architecture-specific includes and features. */
+
+/* Define UA_ARCH_HEADER externally to include architecture-specific
+ * definitions before the defaults below are set. */
+#if defined(UA_ARCH_HEADER)
+#include UA_ARCH_HEADER
+#endif
 
 #cmakedefine UA_ARCHITECTURE_WIN32
 #cmakedefine UA_ARCHITECTURE_POSIX
@@ -89,6 +95,7 @@
 #cmakedefine UA_ENABLE_QUERY
 #cmakedefine UA_ENABLE_MALLOC_SINGLETON
 #cmakedefine UA_ENABLE_DISCOVERY_SEMAPHORE
+#cmakedefine UA_NAMESPACE_ZERO_MINIMAL
 #cmakedefine UA_GENERATED_NAMESPACE_ZERO
 #cmakedefine UA_GENERATED_NAMESPACE_ZERO_FULL
 #cmakedefine UA_ENABLE_PUBSUB_SKS
@@ -214,12 +221,12 @@
  * Thread-local variables
  * ---------------------- */
 #if UA_MULTITHREADING >= 100
-# if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+# if defined(_MSC_VER)
+#  define UA_THREAD_LOCAL __declspec(thread)
+# elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #  define UA_THREAD_LOCAL _Thread_local /* C11 or newer */
 # elif defined(__GNUC__) || defined(__clang__)
 #  define UA_THREAD_LOCAL __thread
-# elif defined(_MSC_VER)
-#  define UA_THREAD_LOCAL __declspec(thread)
 # else
 #  error "No thread-local storage keyword available on this compiler."
 # endif
@@ -326,8 +333,8 @@ UA_atomic_load(void **addr) {
  * pointers can be switched out at runtime. Use-cases for this are testing of
  * constrained memory conditions and arena-based custom memory management.
  *
- * If the flag is undefined, then ``UA_malloc`` etc. are set to the default
- * malloc, as defined in ``/arch/<architecture>/ua_architecture.h``.
+ * If the flag is undefined and ``UA_malloc`` has not been defined by the
+ * architecture header, then ``UA_malloc`` etc. use the standard allocator.
  */
 
 #ifdef UA_ENABLE_MALLOC_SINGLETON
@@ -339,7 +346,7 @@ extern UA_THREAD_LOCAL void * (*UA_reallocSingleton)(void *ptr, size_t size);
 # define UA_free(ptr) UA_freeSingleton(ptr)
 # define UA_calloc(num, size) UA_callocSingleton(num, size)
 # define UA_realloc(ptr, size) UA_reallocSingleton(ptr, size)
-#else
+#elif !defined(UA_malloc)
 # include <stdlib.h>
 # define UA_free free
 # define UA_malloc malloc

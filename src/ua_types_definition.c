@@ -176,6 +176,13 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
     res = UA_NodeId_copy(&sd->defaultEncodingId, &type->binaryEncodingId);
     UA_CHECK_STATUS(res, UA_DataType_clear(type); return res);
 
+    /* Reject definitions whose field count cannot be represented by the
+     * 8-bit membersSize field instead of silently truncating it */
+    if(sd->fieldsSize > UA_BYTE_MAX) {
+        UA_DataType_clear(type);
+        return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    }
+
     /* Allocate the members array */
     type->members = (UA_DataTypeMember *)
         UA_calloc(sd->fieldsSize, sizeof(UA_DataTypeMember));
@@ -194,13 +201,36 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
         type->pointerFree = true;
     }
 
+    /* Accumulate the total size in a wide temporary. type->memSize is only a
+     * 16-bit bitfield -- accumulating directly into it would silently wrap
+     * on oversized definitions and desynchronize it from the true member
+     * layout computed below. */
+    size_t accSize = type->memSize;
+
+    /* C objects always occupy storage, even when an encoded structure has no
+     * fields. An empty union additionally retains its switch field. */
+    if(sd->fieldsSize == 0)
+        accSize = (type->typeKind == UA_DATATYPEKIND_UNION) ? sizeof(UA_UInt32) : 1;
+
     /* Populate the members array */
     for(size_t i = 0; i < sd->fieldsSize; i++) {
         const UA_StructureField *sf = &sd->fields[i];
         UA_DataTypeMember *dtm = &type->members[i];
 
+        /* A datatype can contain itself only indirectly. Resolve a direct
+         * self-reference against the type currently being constructed instead
+         * of requiring it in customTypes. An inline self-member would have an
+         * infinitely large layout and is therefore not supported. */
+        const UA_Boolean selfReference =
+            UA_NodeId_equal(&sf->dataType, &type->typeId);
+        if(selfReference && sf->valueRank != 1 && !sf->isOptional) {
+            UA_DataType_clear(type);
+            return UA_STATUSCODE_BADNOTSUPPORTED;
+        }
+
         /* Find the referenced type */
-        dtm->memberType = UA_findDataTypeWithCustom(&sf->dataType, customTypes);
+        dtm->memberType = selfReference ? type :
+            UA_findDataTypeWithCustom(&sf->dataType, customTypes);
         if(!dtm->memberType) {
             UA_DataType_clear(type);
             return UA_STATUSCODE_BADNOTFOUND;
@@ -219,10 +249,14 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
         *(char*)(uintptr_t)&dtm->memberName[sf->name.length] = '\0';
 #endif
 
-        /* Memory size and padding for the scalar case */
-        UA_Byte talignment = type_alignment(dtm->memberType);
-        size_t memSize = dtm->memberType->memSize;
-        dtm->padding = PADDING(type->memSize, talignment);
+        /* Memory size and padding for the scalar case. A supported
+         * self-reference is indirect and gets its layout below. */
+        size_t memSize = 0;
+        if(!selfReference) {
+            UA_Byte talignment = type_alignment(dtm->memberType);
+            memSize = dtm->memberType->memSize;
+            dtm->padding = PADDING(accSize, talignment);
+        }
 
         /* Handle valuerank and array dimensions */
         if(sf->valueRank == 1) {
@@ -234,7 +268,7 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
             }
             dtm->isArray = true;
             memSize = sizeof(void*) + sizeof(size_t);
-            dtm->padding = PADDING(type->memSize, offsetof(struct _pad_size_t, x));
+            dtm->padding = PADDING(accSize, offsetof(struct _pad_size_t, x));
             type->pointerFree = false; /* array is not pointer-free */
         } else if(sf->valueRank != UA_VALUERANK_SCALAR) {
             /* Only 1D-arrays or scalars are allowed */
@@ -251,7 +285,7 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
             dtm->isOptional = true;
             if(!dtm->isArray) {
                 memSize = sizeof(void*);
-                dtm->padding = PADDING(type->memSize, offsetof(struct _pad_uintptr_t, x));
+                dtm->padding = PADDING(accSize, offsetof(struct _pad_uintptr_t, x));
             }
             UA_assert(!type->pointerFree); /* Set above */
         }
@@ -267,11 +301,18 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
         /* Adjust the type size for the latest member */
         if(type->typeKind == UA_DATATYPEKIND_UNION) {
             /* Increase the memSize if the current member is the largest */
-            if(memSize + dtm->padding > type->memSize)
-                type->memSize = (UA_UInt16)(memSize + dtm->padding);
+            if(memSize + dtm->padding > accSize)
+                accSize = memSize + dtm->padding;
         } else {
             /* Increase the memSize for the current member */
-            type->memSize += (UA_UInt16)(memSize + dtm->padding);
+            accSize += memSize + dtm->padding;
+        }
+
+        /* Reject definitions whose cumulative size does not fit into the
+         * 16-bit memSize bitfield instead of silently wrapping it */
+        if(accSize > UA_UINT16_MAX) {
+            UA_DataType_clear(type);
+            return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
         }
 
         /* Overlayable types cannot have padding */
@@ -283,8 +324,13 @@ UA_DataType_fromStructureDescription(UA_DataType *type,
 
     /* Add final padding according to the member alignment requirements */
     UA_Byte self_alignment = type_alignment(type);
-    UA_Byte end_padding = (UA_Byte)(PADDING(type->memSize, self_alignment));
-    type->memSize += end_padding;
+    UA_Byte end_padding = (UA_Byte)(PADDING(accSize, self_alignment));
+    accSize += end_padding;
+    if(accSize > UA_UINT16_MAX) {
+        UA_DataType_clear(type);
+        return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    }
+    type->memSize = (UA_UInt16)accSize;
 
     /* Finalize handling shortcuts. Types with pointer are never overlayable.  */
     if(end_padding > 0)
@@ -384,6 +430,13 @@ UA_DataType_fromEnumDescription(UA_DataType *type,
     type->pointerFree = true;
     type->overlayable = true;
 
+    /* Reject definitions whose field count cannot be represented by the
+     * 8-bit membersSize field instead of silently truncating it */
+    if(descr->enumDefinition.fieldsSize > UA_BYTE_MAX) {
+        UA_DataType_clear(type);
+        return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    }
+
     /* Allocate the members array */
     type->members = (UA_DataTypeMember *)
         UA_calloc(descr->enumDefinition.fieldsSize, sizeof(UA_DataTypeMember));
@@ -449,7 +502,7 @@ static UA_StatusCode
 UA_DataType_fromSimpleTypeDescription(UA_DataType *type,
                                       const UA_SimpleTypeDescription *descr) {
     /* Check if the BuiltinType is a "simple type" */
-    if(descr->builtInType > 0 &&
+    if(descr->builtInType == 0 ||
        descr->builtInType > UA_DATATYPEKIND_DIAGNOSTICINFO + 1)
         return UA_STATUSCODE_BADINTERNALERROR;
 

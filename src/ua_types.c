@@ -152,10 +152,13 @@ UA_DataType_copy(const UA_DataType *t1, UA_DataType *t2) {
             res = UA_STATUSCODE_BADOUTOFMEMORY;
             goto errout;
         }
+        t2->membersSize = t1->membersSize;
         for(size_t i = 0; i < t1->membersSize; i++) {
             const UA_DataTypeMember *m1 = &t1->members[i];
             UA_DataTypeMember *m2 = &t2->members[i];
             memcpy(m2, m1, sizeof(UA_DataTypeMember));
+            if(m1->memberType == t1)
+                m2->memberType = t2;
 #ifdef UA_ENABLE_TYPEDESCRIPTION
             nameLen = strlen(m1->memberName) + 1;
             char *mName = (char*)UA_malloc(nameLen);
@@ -299,7 +302,9 @@ UA_StatusCode
 UA_String_append(UA_String *s, const UA_String s2) {
     if(s2.length == 0)
         return UA_STATUSCODE_GOOD;
-    UA_Byte *buf = (UA_Byte*)UA_realloc(s->data, s->length + s2.length);
+    UA_Byte *buf = (UA_Byte*)
+        UA_realloc((void*)((uintptr_t)s->data & ~(uintptr_t)UA_EMPTY_ARRAY_SENTINEL),
+                   s->length + s2.length);
     if(!buf)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     memcpy(buf + s->length, s2.data, s2.length);
@@ -408,12 +413,6 @@ UA_QualifiedName_hash(const UA_QualifiedName *q) {
 UA_StatusCode
 UA_QualifiedName_printEx(const UA_QualifiedName *qn, UA_String *output,
                          const UA_NamespaceMapping *nsMapping) {
-    /* If the QualifiedName is NULL, return a NULL string */
-    if(qn->name.data == NULL && qn->namespaceIndex == 0) {
-        UA_String_clear(output);
-        return UA_STATUSCODE_GOOD;
-    }
-
     /* Start tracking the output length */
     size_t len = qn->name.length;
 
@@ -1495,8 +1494,11 @@ checkAdjustRange(const UA_Variant *v, UA_NumericRange *range) {
     /* Check that the number of elements in the variant matches the array
      * dimensions */
     size_t elements = 1;
-    for(size_t i = 0; i < dims_count; ++i)
+    for(size_t i = 0; i < dims_count; ++i) {
+        if(dims[i] != 0 && elements > SIZE_MAX / dims[i])
+            return UA_STATUSCODE_BADINTERNALERROR;
         elements *= dims[i];
+    }
     if(elements != v->arrayLength)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -1559,6 +1561,11 @@ computeStrides(const UA_Variant *v, const UA_NumericRange range,
             *block = running_dimssize * dimrange;
             *stride = running_dimssize * dims[k];
         }
+        /* Overflow in running_dimssize is only possible when the Variant has
+         * passed a corrupted state through checkAdjustRange. Guard here as a
+         * defence-in-depth measure. */
+        if(running_dimssize != 0 && dims[k] > SIZE_MAX / running_dimssize)
+            break;
         *first += running_dimssize * range.dimensions[k].min;
         running_dimssize *= dims[k];
     }
@@ -1791,7 +1798,7 @@ Variant_setRange(UA_Variant *v, void *array, size_t arraySize,
 
     /* If members were moved, initialize original array to prevent reuse */
     if(!copy && !v->type->pointerFree)
-        memset(array, 0, sizeof(elem_size)*arraySize);
+        memset(array, 0, elem_size*arraySize);
 
     return retval;
 }
@@ -2666,6 +2673,8 @@ UA_Array_new(size_t size, const UA_DataType *type) {
         return NULL;
     if(size == 0)
         return UA_EMPTY_ARRAY_SENTINEL;
+    if(size > SIZE_MAX / type->memSize)
+        return NULL;
     return UA_calloc(size, type->memSize);
 }
 
@@ -2685,13 +2694,17 @@ UA_Array_copy(const void *src, size_t size,
     if(UA_UNLIKELY(!type || !src))
         return UA_STATUSCODE_BADINTERNALERROR;
 
+    if(size > SIZE_MAX / type->memSize)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    size_t byteSize = size * type->memSize;
+
     /* calloc, so we don't have to check retval in every iteration of copying */
     *dst = UA_calloc(size, type->memSize);
     if(!*dst)
         return UA_STATUSCODE_BADOUTOFMEMORY;
 
     if(type->pointerFree) {
-        memcpy(*dst, src, type->memSize * size);
+        memcpy(*dst, src, byteSize);
         return UA_STATUSCODE_GOOD;
     }
 
@@ -2716,6 +2729,11 @@ UA_Array_resize(void **p, size_t *size, size_t newSize,
     if(*size == newSize)
         return UA_STATUSCODE_GOOD;
 
+    /* The old and new representations must fit into size_t. */
+    if(*size > SIZE_MAX / type->memSize ||
+       newSize > SIZE_MAX / type->memSize)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+
     /* Empty array? */
     if(newSize == 0) {
         UA_Array_delete(*p, *size, type);
@@ -2724,16 +2742,19 @@ UA_Array_resize(void **p, size_t *size, size_t newSize,
         return UA_STATUSCODE_GOOD;
     }
 
+    size_t newByteSize = newSize * type->memSize;
+
     /* Make a copy of the members that shall be removed. Realloc can fail during
      * trimming. So we cannot clear the members already here. */
     void *deleteMembers = NULL;
     if(newSize < *size && !type->pointerFree) {
         size_t deleteSize = *size - newSize;
-        deleteMembers = UA_malloc(deleteSize * type->memSize);
+        size_t deleteByteSize = deleteSize * type->memSize;
+        deleteMembers = UA_malloc(deleteByteSize);
         if(!deleteMembers)
             return UA_STATUSCODE_BADOUTOFMEMORY;
-        memcpy(deleteMembers, (void*)((uintptr_t)*p + (newSize * type->memSize)),
-               deleteSize * type->memSize); /* shallow copy */
+        memcpy(deleteMembers, (void*)((uintptr_t)*p + newByteSize),
+               deleteByteSize); /* shallow copy */
     }
 
     void *oldP = *p;
@@ -2741,7 +2762,7 @@ UA_Array_resize(void **p, size_t *size, size_t newSize,
         oldP = NULL;
 
     /* Realloc */
-    void *newP = UA_realloc(oldP, newSize * type->memSize);
+    void *newP = UA_realloc(oldP, newByteSize);
     if(!newP) {
         if(deleteMembers)
             UA_free(deleteMembers);
@@ -2751,8 +2772,9 @@ UA_Array_resize(void **p, size_t *size, size_t newSize,
     /* Clear removed members or initialize the new ones. Note that deleteMembers
      * depends on type->pointerFree. */
     if(newSize > *size) {
-        memset((void*)((uintptr_t)newP + (*size * type->memSize)), 0,
-               (newSize - *size) * type->memSize);
+        size_t oldByteSize = *size * type->memSize;
+        memset((void*)((uintptr_t)newP + oldByteSize), 0,
+               newByteSize - oldByteSize);
     } else if(deleteMembers) {
         UA_Array_delete(deleteMembers, *size - newSize, type);
     }
@@ -2768,6 +2790,8 @@ UA_Array_append(void **p, size_t *size, void *newElem,
                 const UA_DataType *type) {
     /* Resize the array */
     size_t oldSize = *size;
+    if(oldSize == SIZE_MAX)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
     UA_StatusCode res = UA_Array_resize(p, size, oldSize+1, type);
     if(res != UA_STATUSCODE_GOOD)
         return res;
@@ -3009,6 +3033,12 @@ UA_NamespaceMapping_clear(UA_NamespaceMapping *nm) {
     UA_Array_delete(nm->namespaceUris, nm->namespaceUrisSize, &UA_TYPES[UA_TYPES_STRING]);
     UA_Array_delete(nm->local2remote, nm->local2remoteSize, &UA_TYPES[UA_TYPES_UINT16]);
     UA_Array_delete(nm->remote2local, nm->remote2localSize, &UA_TYPES[UA_TYPES_UINT16]);
+    nm->namespaceUris = NULL;
+    nm->local2remote = NULL;
+    nm->remote2local = NULL;
+    nm->namespaceUrisSize = 0;
+    nm->local2remoteSize = 0;
+    nm->remote2localSize = 0;
 }
 
 void

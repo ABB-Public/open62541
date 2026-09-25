@@ -22,10 +22,15 @@
 
 static UA_Server *server = NULL;
 
+#define MAX_NOTIFICATIONS 16
+static UA_ApplicationNotificationType receivedNotifications[MAX_NOTIFICATIONS];
+static size_t receivedNotificationsCount = 0;
+
 static void
 serverNotificationCallback(UA_Server *server, UA_ApplicationNotificationType type,
                            const UA_KeyValueMap payload) {
-
+    if(receivedNotificationsCount < MAX_NOTIFICATIONS)
+        receivedNotifications[receivedNotificationsCount++] = type;
 }
 
 static void setup(void) {
@@ -33,6 +38,7 @@ static void setup(void) {
     UA_ServerConfig *cfg = UA_Server_getConfig(server);
     cfg->globalNotificationCallback = serverNotificationCallback;
     ck_assert(server != NULL);
+    receivedNotificationsCount = 0;
 }
 
 static void teardown(void) {
@@ -491,8 +497,9 @@ START_TEST(checkMultipleNamespaces) {
 } END_TEST
 
 START_TEST(checkServerLifecycleCallbackNotification) {
-    /* Just verify that the notification callback is registered and
-     * doesn't crash during startup/shutdown */
+    /* Verify that the notification callback fires the distinct STARTED,
+     * STOPPING and STOPPED notifications -- not STOPPING twice -- during a
+     * normal startup/shutdown cycle. */
     UA_StatusCode ret = UA_Server_run_startup(server);
     ck_assert_uint_eq(ret, UA_STATUSCODE_GOOD);
 
@@ -505,6 +512,11 @@ START_TEST(checkServerLifecycleCallbackNotification) {
 
     ret = UA_Server_run_shutdown(server);
     ck_assert_uint_eq(ret, UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(receivedNotificationsCount, 3);
+    ck_assert_int_eq(receivedNotifications[0], UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STARTED);
+    ck_assert_int_eq(receivedNotifications[1], UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPING);
+    ck_assert_int_eq(receivedNotifications[2], UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STOPPED);
 } END_TEST
 
 START_TEST(checkServerAddVariableTypeNode) {
@@ -608,6 +620,48 @@ START_TEST(checkServerAddObjectTypeNode) {
     ck_assert_int_eq(nc, UA_NODECLASS_OBJECTTYPE);
 } END_TEST
 
+START_TEST(checkServerConfig_returnsLivePointer) {
+    UA_ServerConfig *config1 = UA_Server_getConfig(server);
+    UA_ServerConfig *config2 = UA_Server_getConfig(server);
+    ck_assert_ptr_ne(config1, NULL);
+    ck_assert_ptr_eq(config1, config2);
+
+    /* Mutations through the returned pointer must persist */
+    UA_UInt32 original = config1->maxNodesPerRead;
+    config1->maxNodesPerRead = original + 17;
+    ck_assert_uint_eq(UA_Server_getConfig(server)->maxNodesPerRead,
+                      original + 17);
+    config1->maxNodesPerRead = original;
+} END_TEST
+
+static int callbackCounter = 0;
+static void testRepeatedCallback(UA_Server *s, void *data) {
+    (void)s; (void)data;
+    callbackCounter++;
+}
+
+START_TEST(checkCallbackManagement) {
+    UA_UInt64 callbackId = 0;
+
+    UA_StatusCode ret = UA_Server_run_startup(server);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+
+    ret = UA_Server_addRepeatedCallback(server, testRepeatedCallback, NULL,
+                                        1000.0, &callbackId);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+    ck_assert(callbackId != 0);
+
+    ret = UA_Server_changeRepeatedCallbackInterval(server, callbackId, 2000.0);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+
+    UA_Server_removeCallback(server, callbackId);
+
+    UA_Server_removeCallback(server, 99999);
+
+    ret = UA_Server_run_shutdown(server);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("server");
 
@@ -628,6 +682,7 @@ int main(void) {
     tcase_add_test(tc_ext, checkServerReadDescription);
     tcase_add_test(tc_ext, checkServerReadWriteRank);
     tcase_add_test(tc_ext, checkServerReadNodeId);
+
     tcase_add_test(tc_ext, checkServerAddRemoveNamespace);
     tcase_add_test(tc_ext, checkServerWriteValue);
     tcase_add_test(tc_ext, checkServerAddObjectNode);
@@ -638,6 +693,7 @@ int main(void) {
     tcase_add_test(tc_ext, checkServerAddReference);
     tcase_add_test(tc_ext, checkServerReadDataType);
     tcase_add_test(tc_ext, checkServerRepeatedCallback);
+    tcase_add_test(tc_ext, checkCallbackManagement);
     tcase_add_test(tc_ext, checkForEachChildNodeCall);
     tcase_add_test(tc_ext, checkForEachChildNodeCall_abort);
     tcase_add_test(tc_ext, checkForEachChildNodeCall_invalidNode);
@@ -649,6 +705,7 @@ int main(void) {
     tcase_add_test(tc_ext, checkServerAddDataTypeNode);
     tcase_add_test(tc_ext, checkServerAddReferenceTypeNode);
     tcase_add_test(tc_ext, checkServerAddObjectTypeNode);
+    tcase_add_test(tc_ext, checkServerConfig_returnsLivePointer);
     suite_add_tcase(s, tc_ext);
 
     SRunner *sr = srunner_create(s);

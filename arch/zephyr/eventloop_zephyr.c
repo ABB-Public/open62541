@@ -460,10 +460,9 @@ UA_StatusCode
 UA_EventLoopZephyr_allocNetworkBuffer(UA_ConnectionManager *cm, uintptr_t connectionId,
                                       UA_ByteString *buf, size_t bufSize) {
     UA_ZephyrConnectionManager *pcm = (UA_ZephyrConnectionManager *)cm;
-    if(pcm->txBuffer.length == 0)
-        return UA_ByteString_allocBuffer(buf, bufSize);
+    /* Reuse the static tx buffer; fall back to allocation for larger messages. */
     if(pcm->txBuffer.length < bufSize)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+        return UA_ByteString_allocBuffer(buf, bufSize);
     *buf = pcm->txBuffer;
     buf->length = bufSize;
     return UA_STATUSCODE_GOOD;
@@ -481,25 +480,19 @@ UA_EventLoopZephyr_freeNetworkBuffer(UA_ConnectionManager *cm, uintptr_t connect
 
 UA_StatusCode
 UA_EventLoopZephyr_allocateStaticBuffers(UA_ZephyrConnectionManager *pcm) {
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    UA_UInt32 rxBufSize = 2u << 13; /* The default is 64kb */
-    const UA_UInt32 *configRxBufSize = (const UA_UInt32 *)UA_KeyValueMap_getScalar(
-        &pcm->cm.eventSource.params, UA_QUALIFIEDNAME(0, "recv-bufsize"),
-        &UA_TYPES[UA_TYPES_UINT32]);
-    if(configRxBufSize)
-        rxBufSize = *configRxBufSize;
-    if(pcm->rxBuffer.length != rxBufSize) {
-        UA_ByteString_clear(&pcm->rxBuffer);
-        res = UA_ByteString_allocBuffer(&pcm->rxBuffer, rxBufSize);
-    }
+    UA_StatusCode res =
+        UA_EventLoopCommon_allocStaticBuffer(&pcm->cm.eventSource.params,
+                                             UA_QUALIFIEDNAME(0, "recv-bufsize"),
+                                             1u << 13, /* The default is 8 kb */
+                                             &pcm->rxBuffer);
 
-    const UA_UInt32 *txBufSize = (const UA_UInt32 *)UA_KeyValueMap_getScalar(
-        &pcm->cm.eventSource.params, UA_QUALIFIEDNAME(0, "send-bufsize"),
-        &UA_TYPES[UA_TYPES_UINT32]);
-    if(txBufSize && pcm->txBuffer.length != *txBufSize) {
-        UA_ByteString_clear(&pcm->txBuffer);
-        res |= UA_ByteString_allocBuffer(&pcm->txBuffer, *txBufSize);
-    }
+    /* Default the tx buffer to the rx size so a dedicated static send buffer
+     * always exists. This avoids a malloc/free on every send without reusing
+     * the rx buffer (which may still hold unprocessed received data). */
+    res |= UA_EventLoopCommon_allocStaticBuffer(&pcm->cm.eventSource.params,
+                                                UA_QUALIFIEDNAME(0, "send-bufsize"),
+                                                (UA_UInt32)pcm->rxBuffer.length,
+                                                &pcm->txBuffer);
     return res;
 }
 

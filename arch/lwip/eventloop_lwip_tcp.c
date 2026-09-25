@@ -13,6 +13,13 @@
 #if defined(UA_ARCHITECTURE_LWIP)
 
 /* Configuration parameters */
+#define TCP_MANAGERPARAMS 2
+
+static UA_KeyValueRestriction tcpManagerParams[TCP_MANAGERPARAMS] = {
+    {{0, UA_STRING_STATIC("recv-bufsize")}, &UA_TYPES[UA_TYPES_UINT32], false, true, false},
+    {{0, UA_STRING_STATIC("send-bufsize")}, &UA_TYPES[UA_TYPES_UINT32], false, true, false}
+};
+
 #define TCP_PARAMETERSSIZE 7
 #define TCP_PARAMINDEX_RECVBUF 0
 #define TCP_PARAMINDEX_ADDR 1
@@ -760,8 +767,8 @@ TCP_openPassiveConnection(UA_LWIPConnectionManager *pcm, const UA_KeyValueMap *p
         char hostname[512];
         if(hostStrings[i].length >= sizeof(hostname))
             continue;
-        memcpy(hostname, hostStrings[i].data, hostStrings->length);
-        hostname[hostStrings->length] = '\0';
+        memcpy(hostname, hostStrings[i].data, hostStrings[i].length);
+        hostname[hostStrings[i].length] = '\0';
         if(TCP_registerListenSockets(pcm, hostname, *port, application,
                                      context, connectionCallback, validate, reuseaddr) == UA_STATUSCODE_GOOD)
             retval = UA_STATUSCODE_GOOD;
@@ -1039,7 +1046,7 @@ TCP_eventSourceStart(UA_ConnectionManager *cm) {
     /* Check the parameters */
     UA_StatusCode res =
         UA_KeyValueRestriction_validate(el->eventLoop.logger, "TCP",
-                                        TCPConfigParameters, 1,
+                                        tcpManagerParams, TCP_MANAGERPARAMS,
                                         &cm->eventSource.params);
     if(res != UA_STATUSCODE_GOOD)
         goto finish;

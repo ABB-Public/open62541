@@ -330,6 +330,10 @@ zipNsReplaceNode(UA_Nodestore *ns, UA_Node *node) {
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
+    /* All failure checks have passed. Move the runtime associations only at
+     * the commit point so a failed replacement leaves the old node intact. */
+    UA_Node_moveMonitoredItems((UA_Node*)&oldEntry->nodeId, node);
+
     /* Replace */
     ZipNodestore *zns = (ZipNodestore*)ns;
     ZIP_REMOVE(NodeTree, &zns->root, oldEntry);

@@ -31,8 +31,14 @@ UA_PubSubConnection_disconnect(UA_PubSubConnection *c);
 UA_StatusCode
 UA_PubSubConnectionConfig_copy(const UA_PubSubConnectionConfig *src,
                                UA_PubSubConnectionConfig *dst) {
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
     memcpy(dst, src, sizeof(UA_PubSubConnectionConfig));
+    memset(&dst->publisherId, 0, sizeof(dst->publisherId));
+    dst->name = UA_STRING_NULL;
+    UA_Variant_init(&dst->address);
+    dst->transportProfileUri = UA_STRING_NULL;
+    UA_Variant_init(&dst->connectionTransportSettings);
+    dst->connectionProperties = UA_KEYVALUEMAP_NULL;
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
     res |= UA_PublisherId_copy(&src->publisherId, &dst->publisherId);
     res |= UA_String_copy(&src->name, &dst->name);
     res |= UA_Variant_copy(&src->address, &dst->address);
@@ -66,6 +72,7 @@ UA_PubSubConnectionConfig_clear(UA_PubSubConnectionConfig *connectionConfig) {
     UA_Variant_clear(&connectionConfig->connectionTransportSettings);
     UA_Variant_clear(&connectionConfig->address);
     UA_KeyValueMap_clear(&connectionConfig->connectionProperties);
+    memset(connectionConfig, 0, sizeof(UA_PubSubConnectionConfig));
 }
 
 UA_StatusCode
@@ -102,7 +109,9 @@ UA_PubSubConnection_create(UA_PubSubManager *psm, const UA_PubSubConnectionConfi
         UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
                      "Could not create the PubSubConnection. "
                      "The connection parameters did not validate.");
-        UA_PubSubConnection_delete(psm, c);
+        /* The lifecycle callback has not run yet; free without invoking it. */
+        UA_PubSubComponent_freeWithoutLifecycleCallback(
+            psm, c, UA_PUBSUBCOMPONENT_CONNECTION);
         return ret;
     }
 
@@ -119,7 +128,10 @@ UA_PubSubConnection_create(UA_PubSubManager *psm, const UA_PubSubConnectionConfi
             componentLifecycleCallback(server, c->head.identifier,
                                        UA_PUBSUBCOMPONENT_CONNECTION, false);
         if(res != UA_STATUSCODE_GOOD) {
-            UA_PubSubConnection_delete(psm, c);
+            /* The app refused the component; free without re-asking the
+             * lifecycle callback (it would re-reject and leak the node). */
+            UA_PubSubComponent_freeWithoutLifecycleCallback(
+                psm, c, UA_PUBSUBCOMPONENT_CONNECTION);
             return res;
         }
     }
@@ -514,7 +526,7 @@ UA_PubSubConnection_attachRecvConnection(UA_PubSubManager *psm,
 }
 
 static void
-UA_PubSubConnection_disconnect(UA_PubSubConnection *c) {   
+UA_PubSubConnection_disconnect(UA_PubSubConnection *c) {
     if(!c->cm)
         return;
     if(c->sendChannel != 0)
@@ -620,13 +632,18 @@ UA_PubSubConnection_connectUDP(UA_PubSubManager *psm, UA_PubSubConnection *c,
     UA_NetworkAddressUrlDataType *addressUrl = (UA_NetworkAddressUrlDataType*)
         c->config.address.data;
 
-    /* Extract hostname and port */
+    /* UDP endpoints require an explicit non-zero port. */
     UA_String address;
-    UA_UInt16 port;
+    UA_UInt16 port = 0;
     UA_StatusCode res = UA_parseEndpointUrl(&addressUrl->url, &address, &port, NULL);
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_ERROR_PUBSUB(psm->logging, c, "Could not parse the UDP network URL");
         return res;
+    }
+    if(port == 0) {
+        UA_LOG_ERROR_PUBSUB(psm->logging, c,
+                            "UDP network URL requires a non-zero port");
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
 
     /* Detect a wildcard address for unicast receiving. The individual
