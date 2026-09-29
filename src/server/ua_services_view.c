@@ -671,7 +671,7 @@ browseReferencTargetCallback(void *context, UA_ReferenceTarget *t) {
         UA_ReferenceTypeSet_add(&refs, UA_REFERENCETYPEINDEX_HASTYPEDEFINITION);
         UA_ReferenceTypeSet_add(&refs, UA_REFERENCETYPEINDEX_HASSUBTYPE);
     }
-    
+
     /* Get the node */
     const UA_Node *target =
         UA_NODESTORE_GETFROMREF_SELECTIVE(bc->server, t->targetId,
@@ -679,13 +679,25 @@ browseReferencTargetCallback(void *context, UA_ReferenceTarget *t) {
                                           refs, direction);
     if(!target)
         return NULL;
-    
+
     /* The node class has to match */
     if(!matchClassMask(target, bd->nodeClassMask)) {
         UA_NODESTORE_RELEASE(bc->server, target);
         return NULL;
     }
-    
+
+#if defined(UA_ARCHITECTURE_OUL)
+    /* Do not expose references to nodes the session is not allowed to browse. */
+    if(bc->session != &bc->server->adminSession &&
+       !bc->server->config.accessControl.allowBrowseNode(
+           bc->server, &bc->server->config.accessControl,
+           &bc->session->sessionId, bc->session->context,
+           &target->head.nodeId, target->head.context)) {
+        UA_NODESTORE_RELEASE(bc->server, target);
+        return NULL;
+    }
+#endif
+
     /* Reached maxrefs. Return the "abort" signal. */
     if(bc->rr.size >= cp->maxReferences) {
         UA_NODESTORE_RELEASE(bc->server, target);
